@@ -784,7 +784,7 @@ function formatNum(val, isPct) {
     return val.toFixed(2);
 }
 
-function formatGrowth(val) {
+function formatGrowth(val, isPctRow) {
     if (val===null||val===undefined||!isFinite(val)) return '';
     if (growthMode==='pct') {
         var pct = val*100;
@@ -793,7 +793,15 @@ function formatGrowth(val) {
         if (a >= 100) return Math.round(pct)+'%';
         return pct.toFixed(1)+'%';
     }
-    // Absolute: apply unit conversion (rate factor)
+    // Absolute change
+    if (isPctRow) {
+        // Storage percentage: show percentage point change
+        var pp = val*100;
+        var a = Math.abs(pp);
+        if (a < 0.05) return '0.0 pp';
+        return pp.toFixed(1)+' pp';
+    }
+    // Apply unit conversion (rate factor)
     var unitKey = document.getElementById('unitSelector').value;
     var cfg = UNIT_CONFIG[unitKey];
     var converted = val * cfg.rateFactor;
@@ -1141,11 +1149,10 @@ function updateGrowthTable() {
         bHtml+=hasCh?'<td data-toggle-g="'+h+'">'+dl+'</td>':'<td>'+dl+'</td>';
         for (var i=0;i<vis.length;i++) {
             var ci=vis[i];
-            if (isPct) { bHtml+='<td></td>'; continue; }
-            var gv = computeGrowthCell(rowData.bcf,days,meta,ci,period,gt,isStock);
+            var gv = computeGrowthCell(rowData.bcf,days,meta,ci,period,gt,isStock||isPct);
             if (gv===null) { bHtml+='<td></td>'; continue; }
             var cls = gv>0.0001?'g-pos':(gv<-0.0001?'g-neg':'');
-            bHtml+='<td'+(cls?' class="'+cls+'"':'')+'>'+formatGrowth(gv)+'</td>';
+            bHtml+='<td'+(cls?' class="'+cls+'"':'')+'>'+formatGrowth(gv,isPct)+'</td>';
         }
         bHtml+='</tr>';
         if (hasCh) {
@@ -1159,7 +1166,7 @@ function updateGrowthTable() {
                     var gv=computeGrowthCell(cd.bcf,days,meta,ci,period,gt,false);
                     if (gv===null) { bHtml+='<td></td>'; continue; }
                     var cls=gv>0.0001?'g-pos':(gv<-0.0001?'g-neg':'');
-                    bHtml+='<td'+(cls?' class="'+cls+'"':'')+'>'+formatGrowth(gv)+'</td>';
+                    bHtml+='<td'+(cls?' class="'+cls+'"':'')+'>'+formatGrowth(gv,false)+'</td>';
                 }
                 bHtml+='</tr>';
             }
