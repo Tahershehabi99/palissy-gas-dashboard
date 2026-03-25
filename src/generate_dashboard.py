@@ -667,10 +667,10 @@ td.cell-highlight { background-color: rgba(39, 41, 98, 0.13) !important; }
 .growth-table-container table { border-collapse: collapse; width: max-content; min-width: 100%; }
 .growth-table-container thead th {
     position: sticky; top: 0; z-index: 10;
-    background: #3a3d70; color: #ffffff;
+    background: """ + db + """; color: #ffffff;
     font-size: 11px; font-weight: normal; padding: 8px 12px;
     text-align: right; white-space: nowrap;
-    border-bottom: 2px solid #3a3d70; letter-spacing: 0.3px;
+    border-bottom: 2px solid """ + db + """; letter-spacing: 0.3px;
 }
 .growth-table-container thead th:first-child {
     text-align: left; position: sticky; left: 0; z-index: 20;
@@ -767,7 +767,7 @@ var UNIT_CONFIG = {
 };
 
 var GROWTH_OPTS = {
-    'Monthly':   [{k:'yoy',l:'y/y'},{k:'ytd',l:'YTD y/y'},{k:'ltm',l:'LTM y/y'},{k:'ytd_gy',l:'YTD GY y/y'}],
+    'Monthly':   [{k:'yoy',l:'y/y'},{k:'mom',l:'m/m'},{k:'ytd',l:'YTD y/y'},{k:'ltm',l:'LTM y/y'},{k:'ytd_gy',l:'YTD GY y/y'}],
     'Quarterly': [{k:'yoy',l:'y/y'},{k:'qoq',l:'q/q'},{k:'ytd',l:'YTD y/y'},{k:'ytd_gy',l:'YTD GY y/y'}],
     'Annual CY': [{k:'yoy',l:'y/y'}],
     'Gas Year':  [{k:'yoy',l:'y/y'}],
@@ -795,16 +795,15 @@ function formatGrowth(val, isPctRow) {
     }
     // Absolute change
     if (isPctRow) {
-        // Storage percentage: show percentage point change
         var pp = val*100;
         var a = Math.abs(pp);
         if (a < 0.05) return '0.0 pp';
         return pp.toFixed(1)+' pp';
     }
-    // Apply unit conversion (rate factor)
+    // Absolute: value is already in bcf (volume) or bcf/d (rate) based on selected unit type
     var unitKey = document.getElementById('unitSelector').value;
     var cfg = UNIT_CONFIG[unitKey];
-    var converted = val * cfg.rateFactor;
+    var converted = cfg.isRate ? (val * cfg.rateFactor) : (val * cfg.volFactor);
     return formatNum(converted, false);
 }
 
@@ -903,6 +902,17 @@ function avgBcfd(rowBcf, days, indices) {
     return td===0?null:tb/td;
 }
 
+function sumBcf(rowBcf, indices) {
+    var s=0;
+    for (var i=0;i<indices.length;i++) s+=rowBcf[indices[i]];
+    return s;
+}
+
+function isVolUnit() {
+    var cfg = UNIT_CONFIG[document.getElementById('unitSelector').value];
+    return !cfg.isRate;
+}
+
 function findYoY(meta, idx, vn) {
     var c=meta[idx];
     for (var i=0;i<meta.length;i++) {
@@ -947,88 +957,64 @@ function getLTMIndices(idx) {
 }
 
 function computeGrowthCell(rowBcf, days, meta, idx, vn, gt, isStock) {
-    var curBcfd, prevBcfd;
+    // For pct mode: always compute on bcf/d (% is unit-agnostic)
+    // For abs mode: compute in bcf (volume units) or bcf/d (rate units)
+    var useVol = (growthMode==='abs' && isVolUnit() && !isStock);
+    // Stocks always use raw bcf values regardless
+
+    // Simple comparison helpers
+    function getVal(i) {
+        if (isStock) return rowBcf[i];
+        if (growthMode==='pct') return getBcfd(rowBcf[i],days[i]);
+        // abs mode
+        return useVol ? rowBcf[i] : getBcfd(rowBcf[i],days[i]);
+    }
+    function getAgg(indices) {
+        if (isStock) return rowBcf[indices[indices.length-1]];
+        if (growthMode==='pct') return avgBcfd(rowBcf,days,indices);
+        return useVol ? sumBcf(rowBcf,indices) : avgBcfd(rowBcf,days,indices);
+    }
+    function result(cur,prev) {
+        if (prev===null||cur===null) return null;
+        if (growthMode==='pct') return prev===0?null:(cur/prev-1);
+        return cur-prev;
+    }
 
     if (gt==='yoy') {
-        var pi = findYoY(meta,idx,vn);
-        if (pi<0) return null;
-        curBcfd = isStock ? rowBcf[idx] : getBcfd(rowBcf[idx],days[idx]);
-        prevBcfd = isStock ? rowBcf[pi] : getBcfd(rowBcf[pi],days[pi]);
-        if (growthMode==='pct') return prevBcfd===0?null:(curBcfd/prevBcfd-1);
-        return curBcfd-prevBcfd;
+        var pi=findYoY(meta,idx,vn);
+        return pi<0?null:result(getVal(idx),getVal(pi));
     }
-
+    if (gt==='mom') {
+        return idx<=0?null:result(getVal(idx),getVal(idx-1));
+    }
     if (gt==='qoq') {
-        if (idx<=0) return null;
-        curBcfd = isStock ? rowBcf[idx] : getBcfd(rowBcf[idx],days[idx]);
-        prevBcfd = isStock ? rowBcf[idx-1] : getBcfd(rowBcf[idx-1],days[idx-1]);
-        if (growthMode==='pct') return prevBcfd===0?null:(curBcfd/prevBcfd-1);
-        return curBcfd-prevBcfd;
+        return idx<=0?null:result(getVal(idx),getVal(idx-1));
     }
-
     if (gt==='ytd') {
-        var curI, prevI;
+        var curI,prevI;
         if (vn==='Monthly') {
-            curI = getYTDIndices(meta,idx);
-            var c=meta[idx];
-            prevI = [];
-            for (var i=0;i<meta.length;i++) { if(meta[i].year===c.year-1&&meta[i].month<=c.month) prevI.push(i); }
+            curI=getYTDIndices(meta,idx); var c=meta[idx]; prevI=[];
+            for(var i=0;i<meta.length;i++){if(meta[i].year===c.year-1&&meta[i].month<=c.month)prevI.push(i);}
         } else {
-            curI = getYTDQIndices(meta,idx);
-            var c=meta[idx];
-            prevI = [];
-            for (var i=0;i<meta.length;i++) { if(meta[i].year===c.year-1&&meta[i].quarter<=c.quarter) prevI.push(i); }
+            curI=getYTDQIndices(meta,idx); var c=meta[idx]; prevI=[];
+            for(var i=0;i<meta.length;i++){if(meta[i].year===c.year-1&&meta[i].quarter<=c.quarter)prevI.push(i);}
         }
-        if (curI.length===0||prevI.length<curI.length) return null;
-        if (isStock) {
-            curBcfd = rowBcf[idx];
-            var pi2=findYoY(meta,idx,vn);
-            if(pi2<0) return null;
-            prevBcfd = rowBcf[pi2];
-        } else {
-            curBcfd = avgBcfd(rowBcf,days,curI);
-            prevBcfd = avgBcfd(rowBcf,days,prevI);
-        }
-        if (curBcfd===null||prevBcfd===null) return null;
-        if (growthMode==='pct') return prevBcfd===0?null:(curBcfd/prevBcfd-1);
-        return curBcfd-prevBcfd;
+        if(curI.length===0||prevI.length<curI.length) return null;
+        return result(getAgg(curI),getAgg(prevI));
     }
-
     if (gt==='ltm') {
-        var curI = getLTMIndices(idx);
-        var prevI = getLTMIndices(idx-12);
-        if (curI.length<12||prevI.length<12) return null;
-        if (isStock) {
-            curBcfd = rowBcf[idx];
-            if(idx-12<0) return null;
-            prevBcfd = rowBcf[idx-12];
-        } else {
-            curBcfd = avgBcfd(rowBcf,days,curI);
-            prevBcfd = avgBcfd(rowBcf,days,prevI);
-        }
-        if (curBcfd===null||prevBcfd===null) return null;
-        if (growthMode==='pct') return prevBcfd===0?null:(curBcfd/prevBcfd-1);
-        return curBcfd-prevBcfd;
+        var curI=getLTMIndices(idx),prevI=getLTMIndices(idx-12);
+        if(curI.length<12||prevI.length<12) return null;
+        return result(getAgg(curI),getAgg(prevI));
     }
-
     if (gt==='ytd_gy') {
-        var curI = getYTDGYIndices(meta,idx);
-        if (curI.length===0) return null;
-        var prevGY = meta[idx].gas_year-1;
-        var prevAll = [];
-        for (var i=0;i<meta.length;i++) { if(meta[i].gas_year===prevGY) prevAll.push(i); }
-        var prevI = prevAll.slice(0,curI.length);
-        if (prevI.length<curI.length) return null;
-        if (isStock) {
-            curBcfd = rowBcf[idx];
-            prevBcfd = rowBcf[prevI[prevI.length-1]];
-        } else {
-            curBcfd = avgBcfd(rowBcf,days,curI);
-            prevBcfd = avgBcfd(rowBcf,days,prevI);
-        }
-        if (curBcfd===null||prevBcfd===null) return null;
-        if (growthMode==='pct') return prevBcfd===0?null:(curBcfd/prevBcfd-1);
-        return curBcfd-prevBcfd;
+        var curI=getYTDGYIndices(meta,idx);
+        if(curI.length===0) return null;
+        var prevGY=meta[idx].gas_year-1,prevAll=[];
+        for(var i=0;i<meta.length;i++){if(meta[i].gas_year===prevGY)prevAll.push(i);}
+        var prevI=prevAll.slice(0,curI.length);
+        if(prevI.length<curI.length) return null;
+        return result(getAgg(curI),getAgg(prevI));
     }
     return null;
 }
@@ -1125,12 +1111,8 @@ function updateGrowthTable() {
     var gt = document.getElementById('growthTypeSelector').value;
     growthType = gt;
 
-    var cfg = UNIT_CONFIG[unitKey];
-    var absUnit = cfg.rateLabel;
-    var headerLabel = growthMode==='pct' ? gt.toUpperCase()+' (%)' : gt.toUpperCase()+' ('+absUnit+')';
-
     var thead = document.getElementById('growthHead');
-    var hHtml = '<tr><th>'+headerLabel+'</th>';
+    var hHtml = '<tr><th>Change</th>';
     for (var i=0;i<vis.length;i++) {
         hHtml+='<th>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
     }
@@ -1145,7 +1127,9 @@ function updateGrowthTable() {
         var isPct=item.is_pct, isStock=item.is_stock;
         var rc=isPct?'pct-row':(item.type==='standalone'?'standalone-row':'parent-row');
         bHtml+='<tr class="'+rc+'">';
-        var dl=item.label.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+        var dl='';
+        if (hasCh) dl+='<span class="toggle-arrow'+(isExp?' expanded':'')+'">&#9654;</span> ';
+        dl+=item.label.replace(/&/g,'&amp;').replace(/</g,'&lt;');
         bHtml+=hasCh?'<td data-toggle-g="'+h+'">'+dl+'</td>':'<td>'+dl+'</td>';
         for (var i=0;i<vis.length;i++) {
             var ci=vis[i];
