@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Context folder (contains source model and brand assets - too large / sensitive)
+Context/
+
+# Input data (contains proprietary model data)
+INPUT/
+
+# ClaudeDocs (development notes, not needed for deployment)
+ClaudeDocs/
+
+# Prompts (development prompts)
+Prompts/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
