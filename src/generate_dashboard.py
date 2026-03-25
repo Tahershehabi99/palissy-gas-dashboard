@@ -750,7 +750,8 @@ td.g-neg { color: #C00000; }
     # JavaScript as a plain string (no f-string escaping issues)
     js = r"""
 var DATA = __DATA_PLACEHOLDER__;
-var expandedGroups = {};
+var expandedMain = {};
+var expandedGrowth = {};
 var highlightedCol = -1, highlightedRow = -1;
 var growthMode = 'pct';
 var growthType = 'yoy';
@@ -767,12 +768,12 @@ var UNIT_CONFIG = {
 };
 
 var GROWTH_OPTS = {
-    'Monthly':   [{k:'yoy',l:'y/y'},{k:'mom',l:'m/m'},{k:'ytd',l:'YTD y/y'},{k:'ltm',l:'LTM y/y'},{k:'ytd_gy',l:'YTD GY y/y'}],
-    'Quarterly': [{k:'yoy',l:'y/y'},{k:'qoq',l:'q/q'},{k:'ytd',l:'YTD y/y'},{k:'ytd_gy',l:'YTD GY y/y'}],
-    'Annual CY': [{k:'yoy',l:'y/y'}],
-    'Gas Year':  [{k:'yoy',l:'y/y'}],
-    'Winter':    [{k:'yoy',l:'y/y'}],
-    'Summer':    [{k:'yoy',l:'y/y'}]
+    'Monthly':   [{k:'yoy',l:'Year-on-Year'},{k:'mom',l:'Month-on-Month'},{k:'ytd',l:'YTD Year-on-Year'},{k:'ltm',l:'Last 12 Months'},{k:'ytd_gy',l:'YTD Gas Year Year-on-Year'}],
+    'Quarterly': [{k:'yoy',l:'Year-on-Year'},{k:'qoq',l:'Quarter-on-Quarter'},{k:'ytd',l:'YTD Year-on-Year'},{k:'ytd_gy',l:'YTD Gas Year Year-on-Year'}],
+    'Annual CY': [{k:'yoy',l:'Year-on-Year'}],
+    'Gas Year':  [{k:'yoy',l:'Year-on-Year'}],
+    'Winter':    [{k:'yoy',l:'Year-on-Year'}],
+    'Summer':    [{k:'yoy',l:'Year-on-Year'}]
 };
 
 function formatNum(val, isPct) {
@@ -1062,7 +1063,7 @@ function updateTable() {
     var bHtml = '';
     for (var h=0;h<hierarchy.length;h++) {
         var item=hierarchy[h], rowData=rows[item.index];
-        var isExp = expandedGroups[item.label]||false;
+        var isExp = expandedMain[item.label]||false;
         var hasCh = item.children&&item.children.length>0;
         var isPct=item.is_pct, isStock=item.is_stock;
         var rc = item.type==='standalone'?'standalone-row':'parent-row';
@@ -1122,7 +1123,7 @@ function updateGrowthTable() {
     var bHtml = '';
     for (var h=0;h<hierarchy.length;h++) {
         var item=hierarchy[h], rowData=rows[item.index];
-        var isExp=expandedGroups[item.label]||false;
+        var isExp=expandedGrowth[item.label]||false;
         var hasCh=item.children&&item.children.length>0;
         var isPct=item.is_pct, isStock=item.is_stock;
         var rc=isPct?'pct-row':(item.type==='standalone'?'standalone-row':'parent-row');
@@ -1176,16 +1177,16 @@ document.addEventListener('click', function(e) {
     if (td) {
         var idx=parseInt(td.getAttribute('data-toggle'));
         var label=DATA.hierarchy[idx].label;
-        expandedGroups[label]=!expandedGroups[label];
-        updateAll();
+        expandedMain[label]=!expandedMain[label];
+        updateTable();
         return;
     }
     var td2 = e.target.closest('td[data-toggle-g]');
     if (td2) {
         var idx=parseInt(td2.getAttribute('data-toggle-g'));
         var label=DATA.hierarchy[idx].label;
-        expandedGroups[label]=!expandedGroups[label];
-        updateAll();
+        expandedGrowth[label]=!expandedGrowth[label];
+        updateGrowthTable();
     }
 });
 
