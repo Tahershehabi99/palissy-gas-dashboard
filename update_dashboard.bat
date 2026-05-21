@@ -5,7 +5,7 @@ echo ============================================================
 echo.
 
 cd /d "%~dp0"
-python src\generate_dashboard.py
+py -3 src\generate_dashboard.py
 
 echo.
 if %ERRORLEVEL% EQU 0 (
