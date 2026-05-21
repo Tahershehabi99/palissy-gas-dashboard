@@ -1,24 +1,24 @@
 """
-Palissy European Gas Balance Dashboard Generator
+Palissy Multi-Dataset Dashboard Generator
 
-Reads monthly bcf data from INPUT/gas_model_input.xlsx and generates
-a self-contained HTML dashboard with:
-- Expandable/collapsible rows
-- Unit conversion (bcf, bcf/d, bcm, mmcm/d, TWh, mmt)
-- Time period aggregation (Monthly, Quarterly, Annual CY, Annual GY, Summer, Winter)
-- Palissy brand styling
-- Admin-configurable display range
+Reads multiple dataset tabs from INPUT/gas_model_input.xlsx and produces a
+single self-contained HTML page with a Gas/Power toggle.
+
+Datasets are declared in DATASETS below. Each dataset is one config block —
+adding a new page (e.g. LNG, Storage) is a config addition, not a code change.
+
+Gas page preserves all prior behavior; Power page is new.
 """
 
 import openpyxl
 import json
 import os
 import base64
-from datetime import datetime, date
-from calendar import monthrange
+from datetime import datetime
+from calendar import monthrange  # noqa: F401  (kept for parity)
 
 # ============================================================
-# ADMIN CONFIGURATION - Edit these to change display range
+# ADMIN CONFIGURATION
 # ============================================================
 DISPLAY_START_YEAR = 2020
 DISPLAY_END_YEAR = 2030
@@ -32,30 +32,6 @@ OUTPUT_DIR = os.path.join(PROJECT_DIR, "output")
 OUTPUT_FILE = os.path.join(OUTPUT_DIR, "index.html")
 LOGO_FILE = os.path.join(PROJECT_DIR, "Context", "Palissy Logo.png")
 FONT_FILE = os.path.join(PROJECT_DIR, "Context", "Gotham-Book.otf")
-
-# Conversion factors (from bcf)
-CONVERSIONS = {
-    "bcf": 1.0,
-    "bcm": 1.0 / 35.3,       # 1 bcm = 35.3 bcf
-    "TWh": 1.0 / 3.41,        # 1 TWh = 3.41 bcf
-    "mmt": 1.0 / 48.0,        # 1 mmt = 48 bcf
-}
-
-# Rate conversion labels
-RATE_UNITS = {
-    "bcf": "bcf/d",
-    "bcm": "mmcm/d",
-    "TWh": "GWh/d",
-    "mmt": "kt/d",
-}
-
-# Rate conversion multipliers (from bcf/d)
-RATE_CONVERSIONS = {
-    "bcf": 1.0,                       # bcf/d
-    "bcm": 1000.0 / 35.3,             # mmcm/d
-    "TWh": 1000.0 / 3.41,             # GWh/d
-    "mmt": 1000.0 / 48.0,             # kt/d
-}
 
 # Palissy brand colors
 COLORS = {
@@ -71,260 +47,260 @@ COLORS = {
     "grid": "#E0E0E8",
 }
 
+# ============================================================
+# DATASETS
+# Each entry is a self-contained spec for one page.
+# ============================================================
+GAS_UNIT_CONFIG = {
+    "bcf":    {"volLabel": "bcf",  "rateLabel": "bcf/d",  "volFactor": 1.0,         "rateFactor": 1.0,           "isRate": False},
+    "bcf/d":  {"volLabel": "bcf",  "rateLabel": "bcf/d",  "volFactor": 1.0,         "rateFactor": 1.0,           "isRate": True},
+    "bcm":    {"volLabel": "bcm",  "rateLabel": "mmcm/d", "volFactor": 1.0/35.3,    "rateFactor": 1000.0/35.3,   "isRate": False},
+    "mmcm/d": {"volLabel": "bcm",  "rateLabel": "mmcm/d", "volFactor": 1.0/35.3,    "rateFactor": 1000.0/35.3,   "isRate": True},
+    "TWh":    {"volLabel": "TWh",  "rateLabel": "GWh/d",  "volFactor": 1.0/3.41,    "rateFactor": 1000.0/3.41,   "isRate": False},
+    "GWh/d":  {"volLabel": "TWh",  "rateLabel": "GWh/d",  "volFactor": 1.0/3.41,    "rateFactor": 1000.0/3.41,   "isRate": True},
+    "mmt":    {"volLabel": "mmt",  "rateLabel": "kt/d",   "volFactor": 1.0/48.0,    "rateFactor": 1000.0/48.0,   "isRate": False},
+    "kt/d":   {"volLabel": "mmt",  "rateLabel": "kt/d",   "volFactor": 1.0/48.0,    "rateFactor": 1000.0/48.0,   "isRate": True},
+}
 
-def read_input_data():
-    """Read the INPUT Excel file and return structured data."""
-    print("Reading input data...")
-    wb = openpyxl.load_workbook(INPUT_FILE, read_only=True, data_only=True)
-    ws = wb['Monthly Data']
+# Gas-to-power efficiency assumption for BCFE conversions.
+# BCFE = (TWh) * 3.41 / POWER_EFFICIENCY
+# Industry-standard "thermal efficiency" placeholder; change here if the
+# assumption updates.
+POWER_EFFICIENCY = 0.39
+BCFE_FACTOR = 3.41 / POWER_EFFICIENCY  # ~= 8.7436
 
-    # Find last column
+POWER_UNIT_CONFIG = {
+    "TWh":    {"volLabel": "TWh",  "rateLabel": "TWh",    "volFactor": 1.0,         "rateFactor": 1.0,           "isRate": False},
+    "BCFE":   {"volLabel": "BCFE", "rateLabel": "BCFE/d", "volFactor": BCFE_FACTOR, "rateFactor": BCFE_FACTOR,   "isRate": False},
+    "BCFE/d": {"volLabel": "BCFE", "rateLabel": "BCFE/d", "volFactor": BCFE_FACTOR, "rateFactor": BCFE_FACTOR,   "isRate": True},
+}
+
+DATASETS = [
+    {
+        "key": "gas",
+        "tab_label": "Gas",
+        "title": "European Gas Balance",
+        "sheet": "Monthly Data",
+        "date_row": 1,
+        "days_row": 2,
+        "data_start_row": 5,
+        "base_unit": "bcf",
+        "units": ["bcf", "bcf/d", "bcm", "mmcm/d", "TWh", "GWh/d", "mmt", "kt/d"],
+        "default_unit": "bcf",
+        "unit_config": GAS_UNIT_CONFIG,
+        "stock_rows": ["Opening Storage", "Closing Storage", "Storage percentage"],
+        "pct_rows": ["Storage percentage"],
+        "use_hierarchy": True,
+        "skip_label_rows": [],
+    },
+    {
+        "key": "power",
+        "tab_label": "Power",
+        "title": "European Power Generation",
+        "sheet": "Power Data",
+        "date_row": 6,
+        "days_row": 4,
+        "data_start_row": 8,
+        "base_unit": "TWh",
+        "units": ["TWh", "BCFE", "BCFE/d"],
+        "default_unit": "TWh",
+        "unit_config": POWER_UNIT_CONFIG,
+        "stock_rows": [],
+        "pct_rows": [],
+        "use_hierarchy": False,
+        # Skip the "Generation by Source - EU + UK" section header which has no numeric data.
+        "skip_label_rows": ["Generation by Source - EU + UK"],
+    },
+]
+
+
+# ============================================================
+# DATA LOADING
+# ============================================================
+def read_dataset(wb, config):
+    """Read one dataset tab according to its config. Returns (dates, days, rows)."""
+    sheet_name = config["sheet"]
+    print(f"\n[{config['key']}] Reading sheet '{sheet_name}'...")
+    ws = wb[sheet_name]
+
+    date_row = config["date_row"]
+    days_row = config["days_row"]
+    data_start_row = config["data_start_row"]
+
+    # Detect last column with a date in the date_row
     last_col = 1
-    for row in ws.iter_rows(min_row=1, max_row=1, max_col=500, values_only=False):
-        for cell in row:
-            if cell.value is not None:
-                last_col = cell.column
+    for c in range(2, ws.max_column + 1):
+        if ws.cell(row=date_row, column=c).value is not None:
+            last_col = c
 
-    # Row 1: Dates
+    # Dates
     dates = []
-    for row in ws.iter_rows(min_row=1, max_row=1, min_col=2, max_col=last_col, values_only=True):
-        for val in row:
-            if val is not None:
-                if isinstance(val, datetime):
-                    dates.append(val)
-                elif isinstance(val, str):
-                    dates.append(datetime.strptime(val, "%Y-%m-%d"))
-            else:
-                dates.append(None)
+    for c in range(2, last_col + 1):
+        v = ws.cell(row=date_row, column=c).value
+        if isinstance(v, datetime):
+            dates.append(v)
+        elif isinstance(v, str):
+            dates.append(datetime.strptime(v, "%Y-%m-%d"))
+        else:
+            dates.append(None)
 
-    # Row 2: Days per month
+    # Days
     days_per_month = []
-    for row in ws.iter_rows(min_row=2, max_row=2, min_col=2, max_col=last_col, values_only=True):
-        for val in row:
-            days_per_month.append(int(val) if val is not None else 30)
+    for c in range(2, last_col + 1):
+        v = ws.cell(row=days_row, column=c).value
+        days_per_month.append(int(v) if v is not None else 30)
 
-    # Rows 5+: Data rows (after header row 4 "bcf")
+    # Data rows
+    skip = set(config.get("skip_label_rows", []))
     rows = []
-    row_idx = 0
-    for row in ws.iter_rows(min_row=5, max_row=100, min_col=1, max_col=last_col, values_only=True):
-        label = row[0]
+    r = data_start_row
+    blank_streak = 0
+    while r <= ws.max_row and blank_streak < 3:
+        label = ws.cell(row=r, column=1).value
         if label is None:
-            break
+            blank_streak += 1
+            r += 1
+            continue
+        blank_streak = 0
+        label_str = str(label).strip()
+        if label_str in skip:
+            r += 1
+            continue
         values = []
-        for val in row[1:]:
-            values.append(float(val) if val is not None else 0.0)
-        rows.append({
-            "label": str(label).strip(),
-            "values": values
-        })
-        row_idx += 1
+        for c in range(2, last_col + 1):
+            v = ws.cell(row=r, column=c).value
+            values.append(float(v) if v is not None else 0.0)
+        # If no numeric values at all (e.g. orphan label), skip
+        if all(v == 0.0 for v in values) and label_str not in config.get("stock_rows", []):
+            # Could be a real all-zero forecast row; only skip if also has no
+            # children-style behavior. For safety, keep all-zero rows so we
+            # don't accidentally drop a real (empty) source.
+            pass
+        rows.append({"label": label_str, "values": values})
+        r += 1
 
-    wb.close()
-
-    n_months = len(dates)
-    print(f"  Read {len(rows)} data rows x {n_months} months")
-    print(f"  Date range: {dates[0].strftime('%b %Y')} to {dates[-1].strftime('%b %Y')}")
-
+    print(f"  Loaded {len(rows)} rows x {len(dates)} months ({dates[0].strftime('%b %Y')} - {dates[-1].strftime('%b %Y')})")
     return dates, days_per_month, rows
 
 
-def detect_hierarchy(rows):
+# ============================================================
+# HIERARCHY DETECTION
+# ============================================================
+def detect_hierarchy(rows, stock_rows, use_hierarchy):
+    """Detect parent/child structure.
+
+    With use_hierarchy=True (gas pattern):
+      Rows prefixed + or - = parent totals
+      Un-prefixed rows between parents = children of the NEXT parent
+      stock_rows = always standalone (no children)
+
+    With use_hierarchy=False (flat pattern, e.g. power):
+      All rows are standalone, in source order.
     """
-    Detect parent-child hierarchy from row labels.
+    if not use_hierarchy:
+        return [
+            {
+                "label": row["label"],
+                "row_index": i,
+                "children": [],
+                "type": "standalone",
+            }
+            for i, row in enumerate(rows)
+        ]
 
-    In the gas model, children appear BEFORE their parent total:
-        Russia              <- child
-        Norway              <- child
-        + Imports           <- parent/total (children are above)
-
-    Rules:
-    - Rows with '+' or '-' prefix = parent/total/standalone
-    - Un-prefixed rows that appear between two parent rows = children of
-      the NEXT parent row (the total row that follows them)
-    - Opening Storage, Closing Storage, Storage percentage = standalone
-    """
-    standalone = {'Opening Storage', 'Closing Storage', 'Storage percentage'}
-
-    # First pass: classify each row
+    standalone = set(stock_rows)
     classified = []
     for i, row in enumerate(rows):
         label = row["label"]
-        is_parent = label.startswith('+') or label.startswith('-')
-        is_standalone = label in standalone
         classified.append({
             "index": i,
             "label": label,
-            "is_parent": is_parent,
-            "is_standalone": is_standalone
+            "is_parent": label.startswith("+") or label.startswith("-"),
+            "is_standalone": label in standalone,
         })
 
-    # Second pass: group children with the parent total that follows them
     hierarchy = []
-    pending_children = []
-
+    pending = []
     for item in classified:
         if item["is_standalone"]:
-            # Flush any pending children as standalone rows first
-            for child in pending_children:
-                hierarchy.append({
-                    "label": child["label"],
-                    "row_index": child["index"],
-                    "children": [],
-                    "type": "standalone"
-                })
-            pending_children = []
-            hierarchy.append({
-                "label": item["label"],
-                "row_index": item["index"],
-                "children": [],
-                "type": "standalone"
-            })
+            for child in pending:
+                hierarchy.append({"label": child["label"], "row_index": child["index"], "children": [], "type": "standalone"})
+            pending = []
+            hierarchy.append({"label": item["label"], "row_index": item["index"], "children": [], "type": "standalone"})
         elif item["is_parent"]:
-            if pending_children:
-                # These children belong to THIS parent total
-                children = [{"label": c["label"], "row_index": c["index"]}
-                           for c in pending_children]
-                hierarchy.append({
-                    "label": item["label"],
-                    "row_index": item["index"],
-                    "children": children,
-                    "type": "parent"
-                })
-                pending_children = []
+            if pending:
+                children = [{"label": c["label"], "row_index": c["index"]} for c in pending]
+                hierarchy.append({"label": item["label"], "row_index": item["index"], "children": children, "type": "parent"})
+                pending = []
             else:
-                hierarchy.append({
-                    "label": item["label"],
-                    "row_index": item["index"],
-                    "children": [],
-                    "type": "standalone"
-                })
+                hierarchy.append({"label": item["label"], "row_index": item["index"], "children": [], "type": "standalone"})
         else:
-            # Un-prefixed row — collect as pending child
-            pending_children.append(item)
+            pending.append(item)
 
-    # Flush any remaining pending children
-    for child in pending_children:
-        hierarchy.append({
-            "label": child["label"],
-            "row_index": child["index"],
-            "children": [],
-            "type": "standalone"
-        })
-
+    for child in pending:
+        hierarchy.append({"label": child["label"], "row_index": child["index"], "children": [], "type": "standalone"})
     return hierarchy
 
 
-def is_stock_row(label):
-    """Check if a row is a stock (level) vs flow row."""
-    stock_labels = {'Opening Storage', 'Closing Storage', 'Storage percentage'}
-    return label in stock_labels
-
-
-def is_percentage_row(label):
-    """Check if a row shows percentages (not converted to units)."""
-    return label == 'Storage percentage'
-
-
-def aggregate_monthly_to_periods(dates, days_per_month, rows):
-    """
-    Compute all time period aggregations from monthly data.
-    Returns dict of {period_name: {columns, data}} where data
-    contains aggregated values for each row.
-    """
-    n_months = len(dates)
+# ============================================================
+# AGGREGATION (period-level)
+# ============================================================
+def aggregate_monthly_to_periods(dates, days_per_month):
+    """Group monthly indices into period columns. Generic across datasets."""
     results = {}
 
-    # Helper to get year/month from date index
-    def ym(idx):
-        return dates[idx].year, dates[idx].month
-
-    # ========== MONTHLY ==========
-    monthly_cols = []
-    for i, d in enumerate(dates):
-        monthly_cols.append({
-            "label": d.strftime("%b %Y"),  # "Jan 2020"
-            "short": d.strftime("%b-%y"),   # "Jan-20"
-            "year": d.year,
-            "month": d.month,
-            "gas_year": d.year if d.month >= 10 else d.year - 1,
-            "indices": [i],
-            "days": days_per_month[i]
-        })
+    # Monthly
+    monthly_cols = [{
+        "label": d.strftime("%b %Y"),
+        "short": d.strftime("%b-%y"),
+        "year": d.year,
+        "month": d.month,
+        "gas_year": d.year if d.month >= 10 else d.year - 1,
+        "indices": [i],
+        "days": days_per_month[i],
+    } for i, d in enumerate(dates)]
     results["Monthly"] = monthly_cols
 
-    # ========== QUARTERLY ==========
-    quarterly_cols = []
-    # Group months by year and quarter
+    # Quarterly
     quarters = {}
     for i, d in enumerate(dates):
-        y = d.year
         q = (d.month - 1) // 3 + 1
-        key = (y, q)
-        if key not in quarters:
-            quarters[key] = {"indices": [], "days": 0}
+        key = (d.year, q)
+        quarters.setdefault(key, {"indices": [], "days": 0})
         quarters[key]["indices"].append(i)
         quarters[key]["days"] += days_per_month[i]
+    results["Quarterly"] = [{
+        "label": f"Q{q} {y}", "short": f"Q{q}-{str(y)[2:]}",
+        "year": y, "quarter": q,
+        "gas_year": y if q == 4 else y - 1,
+        "indices": info["indices"], "days": info["days"],
+    } for (y, q), info in sorted(quarters.items()) if len(info["indices"]) == 3]
 
-    for (y, q), info in sorted(quarters.items()):
-        if len(info["indices"]) == 3:  # Complete quarter only
-            quarterly_cols.append({
-                "label": f"Q{q} {y}",
-                "short": f"Q{q}-{str(y)[2:]}",
-                "year": y,
-                "quarter": q,
-                "gas_year": y if q == 4 else y - 1,
-                "indices": info["indices"],
-                "days": info["days"]
-            })
-    results["Quarterly"] = quarterly_cols
-
-    # ========== ANNUAL CALENDAR YEAR ==========
-    annual_cy_cols = []
+    # Annual Calendar Year
     years = {}
     for i, d in enumerate(dates):
-        y = d.year
-        if y not in years:
-            years[y] = {"indices": [], "days": 0}
-        years[y]["indices"].append(i)
-        years[y]["days"] += days_per_month[i]
+        years.setdefault(d.year, {"indices": [], "days": 0})
+        years[d.year]["indices"].append(i)
+        years[d.year]["days"] += days_per_month[i]
+    results["Annual CY"] = [{
+        "label": str(y), "short": str(y), "year": y,
+        "indices": info["indices"], "days": info["days"],
+    } for y, info in sorted(years.items()) if len(info["indices"]) == 12]
 
-    for y, info in sorted(years.items()):
-        if len(info["indices"]) == 12:  # Complete year only
-            annual_cy_cols.append({
-                "label": str(y),
-                "short": str(y),
-                "year": y,
-                "indices": info["indices"],
-                "days": info["days"]
-            })
-    results["Annual CY"] = annual_cy_cols
-
-    # ========== ANNUAL GAS YEAR ==========
-    # Gas Year N = Oct Year N through Sep Year N+1
-    annual_gy_cols = []
+    # Annual Gas Year
     gas_years = {}
     for i, d in enumerate(dates):
         gy = d.year if d.month >= 10 else d.year - 1
-        if gy not in gas_years:
-            gas_years[gy] = {"indices": [], "days": 0}
+        gas_years.setdefault(gy, {"indices": [], "days": 0})
         gas_years[gy]["indices"].append(i)
         gas_years[gy]["days"] += days_per_month[i]
+    results["Gas Year"] = [{
+        "label": f"GY {str(gy)[2:]}/{str(gy+1)[2:]}",
+        "short": f"{str(gy)[2:]}/{str(gy+1)[2:]}",
+        "year": gy, "indices": info["indices"], "days": info["days"],
+    } for gy, info in sorted(gas_years.items()) if len(info["indices"]) == 12]
 
-    for gy, info in sorted(gas_years.items()):
-        if len(info["indices"]) == 12:  # Complete gas year only
-            label = f"{str(gy)[2:]}/{str(gy+1)[2:]}"
-            annual_gy_cols.append({
-                "label": f"GY {label}",
-                "short": label,
-                "year": gy,
-                "indices": info["indices"],
-                "days": info["days"]
-            })
-    results["Gas Year"] = annual_gy_cols
-
-    # ========== WINTERS ==========
-    # Winter of GY N = Oct Year N through Mar Year N+1
-    winter_cols = []
+    # Winters (Oct-Mar)
     winters = {}
     for i, d in enumerate(dates):
         if d.month >= 10:
@@ -333,191 +309,163 @@ def aggregate_monthly_to_periods(dates, days_per_month, rows):
             gy = d.year - 1
         else:
             continue
-        if gy not in winters:
-            winters[gy] = {"indices": [], "days": 0}
+        winters.setdefault(gy, {"indices": [], "days": 0})
         winters[gy]["indices"].append(i)
         winters[gy]["days"] += days_per_month[i]
+    results["Winter"] = [{
+        "label": f"Win {str(gy)[2:]}/{str(gy+1)[2:]}",
+        "short": f"Win {str(gy)[2:]}/{str(gy+1)[2:]}",
+        "year": gy, "indices": info["indices"], "days": info["days"],
+    } for gy, info in sorted(winters.items()) if len(info["indices"]) == 6]
 
-    for gy, info in sorted(winters.items()):
-        if len(info["indices"]) == 6:  # Complete winter only
-            label = f"Win {str(gy)[2:]}/{str(gy+1)[2:]}"
-            winter_cols.append({
-                "label": label,
-                "short": label,
-                "year": gy,
-                "indices": info["indices"],
-                "days": info["days"]
-            })
-    results["Winter"] = winter_cols
-
-    # ========== SUMMERS ==========
-    # Summer = Apr Year N through Sep Year N
-    summer_cols = []
+    # Summers (Apr-Sep)
     summers = {}
     for i, d in enumerate(dates):
         if 4 <= d.month <= 9:
-            y = d.year
-            if y not in summers:
-                summers[y] = {"indices": [], "days": 0}
-            summers[y]["indices"].append(i)
-            summers[y]["days"] += days_per_month[i]
-
-    for y, info in sorted(summers.items()):
-        if len(info["indices"]) == 6:  # Complete summer only
-            label = f"Sum {y}"
-            summer_cols.append({
-                "label": label,
-                "short": label,
-                "year": y,
-                "indices": info["indices"],
-                "days": info["days"]
-            })
-    results["Summer"] = summer_cols
+            summers.setdefault(d.year, {"indices": [], "days": 0})
+            summers[d.year]["indices"].append(i)
+            summers[d.year]["days"] += days_per_month[i]
+    results["Summer"] = [{
+        "label": f"Sum {y}", "short": f"Sum {y}",
+        "year": y, "indices": info["indices"], "days": info["days"],
+    } for y, info in sorted(summers.items()) if len(info["indices"]) == 6]
 
     return results
 
 
-def compute_period_values(rows, period_cols):
+def compute_period_values(rows, period_cols, stock_rows, pct_rows):
+    """For each period column, compute aggregated value per row.
+    Stock rows: opening = first index value; closing = last index value;
+    Storage percentage row: last index value.
+    All other rows: sum of the period.
     """
-    For each time period column, compute the aggregated bcf value for each row.
-    - Stock rows (Opening/Closing Storage): take first/last month value
-    - Storage percentage: take last month value
-    - Flow rows: sum of monthly values
-    """
-    aggregated = []
+    out = []
     for row in rows:
         label = row["label"]
-        values = row["values"]
+        vals = row["values"]
         period_values = []
-
         for col in period_cols:
-            indices = col["indices"]
-            if not indices:
+            idx = col["indices"]
+            if not idx:
                 period_values.append(0)
                 continue
-
-            if label == 'Opening Storage':
-                # First month's value
-                period_values.append(values[indices[0]])
-            elif label == 'Closing Storage':
-                # Last month's value
-                period_values.append(values[indices[-1]])
-            elif label == 'Storage percentage':
-                # Last month's value
-                period_values.append(values[indices[-1]])
+            if label == "Opening Storage":
+                period_values.append(vals[idx[0]])
+            elif label == "Closing Storage":
+                period_values.append(vals[idx[-1]])
+            elif label in pct_rows:
+                period_values.append(vals[idx[-1]])
+            elif label in stock_rows:
+                # Generic stock fallback (last value)
+                period_values.append(vals[idx[-1]])
             else:
-                # Sum of months
-                total = sum(values[idx] for idx in indices)
-                period_values.append(total)
-
-        aggregated.append({
-            "label": label,
-            "bcf_values": period_values
-        })
-
-    return aggregated
+                period_values.append(sum(vals[i] for i in idx))
+        out.append({"label": label, "base_values": period_values})
+    return out
 
 
-def build_dashboard_data(dates, days_per_month, rows, hierarchy, period_results):
-    """Build the complete data structure for the dashboard JSON."""
+# ============================================================
+# DATASET BUILDER
+# ============================================================
+def build_dataset_blob(config):
+    """Load + aggregate one dataset and produce its JSON-ready blob."""
+    wb = openpyxl.load_workbook(INPUT_FILE, data_only=True)
+    try:
+        dates, days, rows = read_dataset(wb, config)
+    finally:
+        wb.close()
 
-    # Build period data for each view — pass ALL data unfiltered
-    # JS handles display range filtering (needs historical data for growth calcs)
+    hierarchy = detect_hierarchy(rows, config["stock_rows"], config["use_hierarchy"])
+    print(f"  Hierarchy: {len(hierarchy)} items, {sum(1 for h in hierarchy if h['children']) } with children")
+
+    period_results = aggregate_monthly_to_periods(dates, days)
+    print(f"  Periods: " + ", ".join(f"{k}={len(v)}" for k, v in period_results.items()))
+
     views = {}
     for view_name, period_cols in period_results.items():
-        aggregated = compute_period_values(rows, period_cols)
-        days_array = [col["days"] for col in period_cols]
-
-        # Build column metadata for JS
+        aggregated = compute_period_values(rows, period_cols, config["stock_rows"], config["pct_rows"])
+        days_array = [c["days"] for c in period_cols]
         col_meta = []
-        for col in period_cols:
-            meta = {
-                "label": col["label"],
-                "short": col["short"],
-                "year": col.get("year", 0),
-                "days": col["days"],
-            }
-            if "month" in col:
-                meta["month"] = col["month"]
-            if "quarter" in col:
-                meta["quarter"] = col["quarter"]
-            if "gas_year" in col:
-                meta["gas_year"] = col["gas_year"]
+        for c in period_cols:
+            meta = {"label": c["label"], "short": c["short"], "year": c.get("year", 0), "days": c["days"]}
+            if "month" in c: meta["month"] = c["month"]
+            if "quarter" in c: meta["quarter"] = c["quarter"]
+            if "gas_year" in c: meta["gas_year"] = c["gas_year"]
             col_meta.append(meta)
-
         views[view_name] = {
-            "columns": [col["label"] for col in period_cols],
-            "short_columns": [col["short"] for col in period_cols],
+            "columns": [c["label"] for c in period_cols],
+            "short_columns": [c["short"] for c in period_cols],
             "col_meta": col_meta,
             "days": days_array,
-            "rows": []
+            "rows": [{"label": a["label"], "base": a["base_values"]} for a in aggregated],
         }
 
-        for agg_row in aggregated:
-            views[view_name]["rows"].append({
-                "label": agg_row["label"],
-                "bcf": agg_row["bcf_values"]
-            })
-
-    # Build hierarchy for the UI
     ui_hierarchy = []
     for item in hierarchy:
         entry = {
             "label": item["label"],
             "index": item["row_index"],
             "type": item["type"],
-            "is_stock": is_stock_row(item["label"]),
-            "is_pct": is_percentage_row(item["label"]),
-            "children": []
+            "is_stock": item["label"] in config["stock_rows"],
+            "is_pct": item["label"] in config["pct_rows"],
+            "children": [],
         }
         for child in item["children"]:
             entry["children"].append({
                 "label": child["label"],
                 "index": child["row_index"],
                 "is_stock": False,
-                "is_pct": False
+                "is_pct": False,
             })
         ui_hierarchy.append(entry)
 
     return {
+        "key": config["key"],
+        "tab_label": config["tab_label"],
+        "title": config["title"],
+        "base_unit": config["base_unit"],
+        "units": config["units"],
+        "default_unit": config["default_unit"],
+        "unit_config": config["unit_config"],
+        "use_hierarchy": config["use_hierarchy"],
         "views": views,
         "hierarchy": ui_hierarchy,
         "selectable_start": DISPLAY_START_YEAR,
         "selectable_end": DISPLAY_END_YEAR,
-        "generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
 
 
+# ============================================================
+# ASSET LOADING
+# ============================================================
 def load_assets():
-    """Load logo and font as base64 for embedding."""
     assets = {}
-
     if os.path.exists(LOGO_FILE):
         with open(LOGO_FILE, "rb") as f:
             assets["logo_b64"] = base64.b64encode(f.read()).decode("utf-8")
-        print(f"  Logo loaded: {LOGO_FILE}")
     else:
         assets["logo_b64"] = ""
-        print(f"  WARNING: Logo not found at {LOGO_FILE}")
-
     if os.path.exists(FONT_FILE):
         with open(FONT_FILE, "rb") as f:
             assets["font_b64"] = base64.b64encode(f.read()).decode("utf-8")
-        print(f"  Font loaded: {FONT_FILE}")
     else:
         assets["font_b64"] = ""
-        print(f"  WARNING: Font not found at {FONT_FILE}")
-
     return assets
 
 
-def generate_html(dashboard_data, assets):
-    """Generate the self-contained HTML dashboard."""
-
-    data_json = json.dumps(dashboard_data, separators=(',', ':'))
+# ============================================================
+# HTML GENERATION
+# ============================================================
+def generate_html(datasets_by_key, ordered_keys, assets):
+    master = {
+        "datasets": datasets_by_key,
+        "order": ordered_keys,
+        "generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    }
+    data_json = json.dumps(master, separators=(",", ":"))
     logo_b64 = assets.get("logo_b64", "")
     font_b64 = assets.get("font_b64", "")
-    generated = dashboard_data["generated"]
+    generated = master["generated"]
     db = COLORS["dark_blue"]
     grey = COLORS["grey"]
     red = COLORS["red"]
@@ -525,7 +473,6 @@ def generate_html(dashboard_data, assets):
     border = COLORS["border"]
     grid = COLORS["grid"]
 
-    # Build HTML using string concatenation to avoid f-string issues with JS
     css = """
 @font-face {
     font-family: 'Gotham Book';
@@ -539,13 +486,28 @@ body {
 }
 .header {
     text-align: center; padding: 20px 20px 10px;
-    border-bottom: 2px solid """ + db + """; margin-bottom: 15px;
+    border-bottom: 2px solid """ + db + """; margin-bottom: 12px;
 }
 .header img { height: 70px; object-fit: contain; margin-bottom: 8px; }
 .header h1 {
     font-size: 18px; font-weight: bold; color: """ + db + """;
     letter-spacing: 1px; text-transform: uppercase;
 }
+
+.dataset-toggle-bar {
+    display: flex; justify-content: center; align-items: center;
+    padding: 8px 20px 14px; gap: 0;
+}
+.dataset-toggle-btn {
+    font-family: 'Gotham Book', 'Segoe UI', Calibri, sans-serif;
+    font-size: 14px; font-weight: bold; padding: 9px 30px;
+    border: 2px solid """ + db + """; background: #ffffff; color: """ + db + """;
+    cursor: pointer; transition: all 0.2s ease;
+}
+.dataset-toggle-btn:first-child { border-radius: 6px 0 0 6px; border-right: 1px solid """ + db + """; }
+.dataset-toggle-btn:last-child  { border-radius: 0 6px 6px 0; border-left: 1px solid """ + db + """; }
+.dataset-toggle-btn.active { background: """ + db + """; color: #ffffff; }
+.dataset-toggle-btn:hover:not(.active) { background: """ + card + """; }
 
 .controls {
     display: flex; justify-content: center; align-items: center; gap: 20px;
@@ -589,7 +551,7 @@ body {
 .table-container {
     margin: 0 20px 10px; overflow-x: auto;
     border: 1px solid """ + border + """; border-radius: 10px;
-    max-height: calc(100vh - 350px); overflow-y: auto;
+    max-height: calc(100vh - 380px); overflow-y: auto;
     box-shadow: 0 1px 4px rgba(39, 41, 98, 0.06);
 }
 table { border-collapse: collapse; width: max-content; min-width: 100%; }
@@ -703,6 +665,7 @@ td.g-neg { color: #C00000; }
     .header { padding: 16px 16px 8px; }
     .header img { height: 55px; }
     .header h1 { font-size: 16px; }
+    .dataset-toggle-btn { font-size: 13px; padding: 8px 22px; }
     .controls { margin: 0 12px 8px; padding: 12px 18px; gap: 14px; }
     .table-container, .growth-section { margin-left: 12px; margin-right: 12px; }
     thead th { font-size: 10.5px; padding: 8px 10px; }
@@ -711,9 +674,11 @@ td.g-neg { color: #C00000; }
     tr.child-row td:first-child { padding-left: 26px; }
 }
 @media (max-width: 768px) {
-    .header { padding: 14px 12px 8px; margin-bottom: 10px; }
+    .header { padding: 14px 12px 8px; margin-bottom: 8px; }
     .header img { height: 45px; margin-bottom: 6px; }
     .header h1 { font-size: 14px; letter-spacing: 0.5px; }
+    .dataset-toggle-bar { padding: 6px 12px 10px; }
+    .dataset-toggle-btn { font-size: 12px; padding: 7px 18px; }
     .controls {
         flex-direction: column; gap: 10px; padding: 10px 14px;
         margin: 0 8px 8px; border-radius: 10px;
@@ -722,7 +687,7 @@ td.g-neg { color: #C00000; }
     .control-group select { flex: 1; font-size: 13px; padding: 10px 32px 10px 12px; }
     .control-group label { font-size: 10px; min-width: 50px; }
     .table-container, .growth-section { margin-left: 8px; margin-right: 8px; }
-    .table-container { max-height: calc(100vh - 300px); -webkit-overflow-scrolling: touch; }
+    .table-container { max-height: calc(100vh - 340px); -webkit-overflow-scrolling: touch; }
     table { font-size: 11px; }
     thead th { font-size: 10px; padding: 8px 8px; }
     tbody td { font-size: 11px; padding: 5px 8px; }
@@ -733,9 +698,10 @@ td.g-neg { color: #C00000; }
     .unit-label { display: none; }
 }
 @media (max-width: 480px) {
-    .header { padding: 10px 8px 6px; margin-bottom: 8px; }
+    .header { padding: 10px 8px 6px; margin-bottom: 6px; }
     .header img { height: 36px; margin-bottom: 4px; }
     .header h1 { font-size: 12px; }
+    .dataset-toggle-btn { font-size: 11px; padding: 6px 14px; }
     .controls { margin: 0 6px 6px; padding: 8px 10px; gap: 8px; border-radius: 8px; }
     .control-group select { font-size: 12px; padding: 8px 28px 8px 10px; }
     .table-container, .growth-section { margin-left: 6px; margin-right: 6px; }
@@ -747,25 +713,18 @@ td.g-neg { color: #C00000; }
 }
 """
 
-    # JavaScript as a plain string (no f-string escaping issues)
     js = r"""
-var DATA = __DATA_PLACEHOLDER__;
+var ROOT = __DATA_PLACEHOLDER__;
+var ALL_DATASETS = ROOT.datasets;
+var DATASET_ORDER = ROOT.order;
+var currentKey = DATASET_ORDER[0];
+var DATA = ALL_DATASETS[currentKey];
+
 var expandedMain = {};
 var expandedGrowth = {};
 var highlightedCol = -1, highlightedRow = -1;
 var growthMode = 'pct';
 var growthType = 'yoy';
-
-var UNIT_CONFIG = {
-    'bcf':    { volLabel:'bcf',  rateLabel:'bcf/d',  volFactor:1.0,        rateFactor:1.0 },
-    'bcf/d':  { volLabel:'bcf',  rateLabel:'bcf/d',  volFactor:1.0,        rateFactor:1.0,        isRate:true },
-    'bcm':    { volLabel:'bcm',  rateLabel:'mmcm/d', volFactor:1.0/35.3,   rateFactor:1000.0/35.3 },
-    'mmcm/d': { volLabel:'bcm',  rateLabel:'mmcm/d', volFactor:1.0/35.3,   rateFactor:1000.0/35.3,isRate:true },
-    'TWh':    { volLabel:'TWh',  rateLabel:'GWh/d',  volFactor:1.0/3.41,   rateFactor:1000.0/3.41 },
-    'GWh/d':  { volLabel:'TWh',  rateLabel:'GWh/d',  volFactor:1.0/3.41,   rateFactor:1000.0/3.41,isRate:true },
-    'mmt':    { volLabel:'mmt',  rateLabel:'kt/d',   volFactor:1.0/48.0,   rateFactor:1000.0/48.0 },
-    'kt/d':   { volLabel:'mmt',  rateLabel:'kt/d',   volFactor:1.0/48.0,   rateFactor:1000.0/48.0,isRate:true }
-};
 
 var GROWTH_OPTS = {
     'Monthly':   [{k:'yoy',l:'Year-on-Year'},{k:'mom',l:'Month-on-Month'},{k:'ytd',l:'YTD Year-on-Year'},{k:'ltm',l:'Last 12 Months'},{k:'ytd_gy',l:'YTD Gas Year Year-on-Year'}],
@@ -775,6 +734,9 @@ var GROWTH_OPTS = {
     'Winter':    [{k:'yoy',l:'Year-on-Year'}],
     'Summer':    [{k:'yoy',l:'Year-on-Year'}]
 };
+
+function unitCfg(unitKey) { return DATA.unit_config[unitKey] || DATA.unit_config[DATA.default_unit]; }
+function isVolUnit() { return !unitCfg(document.getElementById('unitSelector').value).isRate; }
 
 function formatNum(val, isPct) {
     if (isPct) return (val*100).toFixed(1)+'%';
@@ -794,36 +756,33 @@ function formatGrowth(val, isPctRow) {
         if (a >= 100) return Math.round(pct)+'%';
         return pct.toFixed(1)+'%';
     }
-    // Absolute change
     if (isPctRow) {
         var pp = val*100;
         var a = Math.abs(pp);
         if (a < 0.05) return '0.0 pp';
         return pp.toFixed(1)+' pp';
     }
-    // Absolute: value is already in bcf (volume) or bcf/d (rate) based on selected unit type
-    var unitKey = document.getElementById('unitSelector').value;
-    var cfg = UNIT_CONFIG[unitKey];
+    var cfg = unitCfg(document.getElementById('unitSelector').value);
     var converted = cfg.isRate ? (val * cfg.rateFactor) : (val * cfg.volFactor);
     return formatNum(converted, false);
 }
 
-function computeDisplayValue(bcfVal, unitKey, isStock, isPct, days) {
-    if (isPct) return bcfVal;
-    var cfg = UNIT_CONFIG[unitKey];
-    if (isStock) return bcfVal * cfg.volFactor;
-    if (cfg.isRate) return (bcfVal / days) * cfg.rateFactor;
-    return bcfVal * cfg.volFactor;
+function computeDisplayValue(baseVal, unitKey, isStock, isPct, days) {
+    if (isPct) return baseVal;
+    var cfg = unitCfg(unitKey);
+    if (isStock) return baseVal * cfg.volFactor;
+    if (cfg.isRate) return (baseVal / days) * cfg.rateFactor;
+    return baseVal * cfg.volFactor;
 }
 
 function getStockLabel(label, unitKey) {
-    var cfg = UNIT_CONFIG[unitKey];
+    var cfg = unitCfg(unitKey);
     if (cfg.isRate) return label + ' (' + cfg.volLabel + ')';
     return label;
 }
 
 function getHeaderUnitLabel(unitKey) {
-    var cfg = UNIT_CONFIG[unitKey];
+    var cfg = unitCfg(unitKey);
     return cfg.isRate ? cfg.rateLabel : cfg.volLabel;
 }
 
@@ -885,7 +844,6 @@ function resetRange() {
     updateAll();
 }
 
-/* === PERIOD NOTE === */
 function updatePeriodNote() {
     var p = document.getElementById('periodSelector').value;
     var el = document.getElementById('periodNote');
@@ -895,23 +853,16 @@ function updatePeriodNote() {
 }
 
 /* === GROWTH COMPUTATION === */
-function getBcfd(bcf, days) { return bcf/days; }
-
-function avgBcfd(rowBcf, days, indices) {
+function getRate(base, days) { return base/days; }
+function avgRate(rowBase, days, indices) {
     var tb=0, td=0;
-    for (var i=0;i<indices.length;i++) { tb+=rowBcf[indices[i]]; td+=days[indices[i]]; }
+    for (var i=0;i<indices.length;i++) { tb+=rowBase[indices[i]]; td+=days[indices[i]]; }
     return td===0?null:tb/td;
 }
-
-function sumBcf(rowBcf, indices) {
+function sumVol(rowBase, indices) {
     var s=0;
-    for (var i=0;i<indices.length;i++) s+=rowBcf[indices[i]];
+    for (var i=0;i<indices.length;i++) s+=rowBase[indices[i]];
     return s;
-}
-
-function isVolUnit() {
-    var cfg = UNIT_CONFIG[document.getElementById('unitSelector').value];
-    return !cfg.isRate;
 }
 
 function findYoY(meta, idx, vn) {
@@ -925,31 +876,21 @@ function findYoY(meta, idx, vn) {
     }
     return -1;
 }
-
 function getYTDIndices(meta, idx) {
     var c=meta[idx], out=[];
-    for (var i=0;i<meta.length;i++) {
-        if (meta[i].year===c.year && meta[i].month<=c.month) out.push(i);
-    }
+    for (var i=0;i<meta.length;i++) { if (meta[i].year===c.year && meta[i].month<=c.month) out.push(i); }
     return out;
 }
-
 function getYTDQIndices(meta, idx) {
     var c=meta[idx], out=[];
-    for (var i=0;i<meta.length;i++) {
-        if (meta[i].year===c.year && meta[i].quarter<=c.quarter) out.push(i);
-    }
+    for (var i=0;i<meta.length;i++) { if (meta[i].year===c.year && meta[i].quarter<=c.quarter) out.push(i); }
     return out;
 }
-
 function getYTDGYIndices(meta, idx) {
     var c=meta[idx], gy=c.gas_year, out=[];
-    for (var i=0;i<meta.length;i++) {
-        if (meta[i].gas_year===gy && i<=idx) out.push(i);
-    }
+    for (var i=0;i<meta.length;i++) { if (meta[i].gas_year===gy && i<=idx) out.push(i); }
     return out;
 }
-
 function getLTMIndices(idx) {
     if (idx<11) return [];
     var out=[];
@@ -957,23 +898,17 @@ function getLTMIndices(idx) {
     return out;
 }
 
-function computeGrowthCell(rowBcf, days, meta, idx, vn, gt, isStock) {
-    // For pct mode: always compute on bcf/d (% is unit-agnostic)
-    // For abs mode: compute in bcf (volume units) or bcf/d (rate units)
+function computeGrowthCell(rowBase, days, meta, idx, vn, gt, isStock) {
     var useVol = (growthMode==='abs' && isVolUnit() && !isStock);
-    // Stocks always use raw bcf values regardless
-
-    // Simple comparison helpers
     function getVal(i) {
-        if (isStock) return rowBcf[i];
-        if (growthMode==='pct') return getBcfd(rowBcf[i],days[i]);
-        // abs mode
-        return useVol ? rowBcf[i] : getBcfd(rowBcf[i],days[i]);
+        if (isStock) return rowBase[i];
+        if (growthMode==='pct') return getRate(rowBase[i],days[i]);
+        return useVol ? rowBase[i] : getRate(rowBase[i],days[i]);
     }
     function getAgg(indices) {
-        if (isStock) return rowBcf[indices[indices.length-1]];
-        if (growthMode==='pct') return avgBcfd(rowBcf,days,indices);
-        return useVol ? sumBcf(rowBcf,indices) : avgBcfd(rowBcf,days,indices);
+        if (isStock) return rowBase[indices[indices.length-1]];
+        if (growthMode==='pct') return avgRate(rowBase,days,indices);
+        return useVol ? sumVol(rowBase,indices) : avgRate(rowBase,days,indices);
     }
     function result(cur,prev) {
         if (prev===null||cur===null) return null;
@@ -985,10 +920,7 @@ function computeGrowthCell(rowBcf, days, meta, idx, vn, gt, isStock) {
         var pi=findYoY(meta,idx,vn);
         return pi<0?null:result(getVal(idx),getVal(pi));
     }
-    if (gt==='mom') {
-        return idx<=0?null:result(getVal(idx),getVal(idx-1));
-    }
-    if (gt==='qoq') {
+    if (gt==='mom' || gt==='qoq') {
         return idx<=0?null:result(getVal(idx),getVal(idx-1));
     }
     if (gt==='ytd') {
@@ -1020,11 +952,10 @@ function computeGrowthCell(rowBcf, days, meta, idx, vn, gt, isStock) {
     return null;
 }
 
-/* === GROWTH TYPE SELECTOR === */
 function updateGrowthTypeSelector() {
     var p = document.getElementById('periodSelector').value;
     var sel = document.getElementById('growthTypeSelector');
-    var opts = GROWTH_OPTS[p] || [{k:'yoy',l:'y/y'}];
+    var opts = GROWTH_OPTS[p] || [{k:'yoy',l:'Year-on-Year'}];
     sel.innerHTML = '';
     for (var i=0;i<opts.length;i++) {
         sel.innerHTML += '<option value="'+opts[i].k+'"'+(i===0?' selected':'')+'>'+opts[i].l+'</option>';
@@ -1037,6 +968,40 @@ function setGrowthMode(mode) {
     document.getElementById('btnPct').className = mode==='pct'?'active':'';
     document.getElementById('btnAbs').className = mode==='abs'?'active':'';
     updateGrowthTable();
+}
+
+function rebuildUnitSelector() {
+    var sel = document.getElementById('unitSelector');
+    sel.innerHTML = '';
+    for (var i=0;i<DATA.units.length;i++) {
+        var u = DATA.units[i];
+        var selected = (u === DATA.default_unit) ? ' selected' : '';
+        sel.innerHTML += '<option value="'+u+'"'+selected+'>'+u+'</option>';
+    }
+}
+
+function updateDatasetUI() {
+    document.getElementById('pageTitle').textContent = DATA.title;
+    document.title = 'Palissy Advisors - ' + DATA.title;
+    for (var i=0;i<DATASET_ORDER.length;i++) {
+        var k = DATASET_ORDER[i];
+        var btn = document.getElementById('btnDataset-'+k);
+        if (btn) btn.classList.toggle('active', k === currentKey);
+    }
+}
+
+function switchDataset(key) {
+    if (key === currentKey) return;
+    currentKey = key;
+    DATA = ALL_DATASETS[key];
+    expandedMain = {};
+    expandedGrowth = {};
+    updateDatasetUI();
+    rebuildUnitSelector();
+    updateRangeSelectors();
+    updateGrowthTypeSelector();
+    updatePeriodNote();
+    updateAll();
 }
 
 /* === MAIN TABLE === */
@@ -1075,8 +1040,8 @@ function updateTable() {
         lbl+=dl.replace(/&/g,'&amp;').replace(/</g,'&lt;');
         bHtml+= hasCh?'<td data-toggle="'+h+'">'+lbl+'</td>':'<td>'+lbl+'</td>';
         for (var i=0;i<vis.length;i++) {
-            var ci=vis[i], bcfVal=rowData.bcf[ci];
-            var dv = isPct?formatNum(bcfVal,true):formatNum(computeDisplayValue(bcfVal,unitKey,isStock,false,days[ci]),false);
+            var ci=vis[i], baseVal=rowData.base[ci];
+            var dv = isPct?formatNum(baseVal,true):formatNum(computeDisplayValue(baseVal,unitKey,isStock,false,days[ci]),false);
             bHtml+='<td>'+dv+'</td>';
         }
         bHtml+='</tr>';
@@ -1088,7 +1053,7 @@ function updateTable() {
                 bHtml+='<td>'+ch.label.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</td>';
                 for (var i=0;i<vis.length;i++) {
                     var ci=vis[i];
-                    bHtml+='<td>'+formatNum(computeDisplayValue(cd.bcf[ci],unitKey,false,false,days[ci]),false)+'</td>';
+                    bHtml+='<td>'+formatNum(computeDisplayValue(cd.base[ci],unitKey,false,false,days[ci]),false)+'</td>';
                 }
                 bHtml+='</tr>';
             }
@@ -1100,7 +1065,6 @@ function updateTable() {
 /* === GROWTH TABLE === */
 function updateGrowthTable() {
     var period = document.getElementById('periodSelector').value;
-    var unitKey = document.getElementById('unitSelector').value;
     var view = DATA.views[period];
     if (!view) return;
 
@@ -1134,7 +1098,7 @@ function updateGrowthTable() {
         bHtml+=hasCh?'<td data-toggle-g="'+h+'">'+dl+'</td>':'<td>'+dl+'</td>';
         for (var i=0;i<vis.length;i++) {
             var ci=vis[i];
-            var gv = computeGrowthCell(rowData.bcf,days,meta,ci,period,gt,isStock||isPct);
+            var gv = computeGrowthCell(rowData.base,days,meta,ci,period,gt,isStock||isPct);
             if (gv===null) { bHtml+='<td></td>'; continue; }
             var cls = gv>0.0001?'g-pos':(gv<-0.0001?'g-neg':'');
             bHtml+='<td'+(cls?' class="'+cls+'"':'')+'>'+formatGrowth(gv,isPct)+'</td>';
@@ -1148,7 +1112,7 @@ function updateGrowthTable() {
                 bHtml+='<td>'+ch.label.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</td>';
                 for (var i=0;i<vis.length;i++) {
                     var ci=vis[i];
-                    var gv=computeGrowthCell(cd.bcf,days,meta,ci,period,gt,false);
+                    var gv=computeGrowthCell(cd.base,days,meta,ci,period,gt,false);
                     if (gv===null) { bHtml+='<td></td>'; continue; }
                     var cls=gv>0.0001?'g-pos':(gv<-0.0001?'g-neg':'');
                     bHtml+='<td'+(cls?' class="'+cls+'"':'')+'>'+formatGrowth(gv,false)+'</td>';
@@ -1167,7 +1131,6 @@ function onPeriodChange() {
     updatePeriodNote();
     updateAll();
 }
-
 function onRangeChange() { updateAll(); }
 function onGrowthTypeChange() { growthType=document.getElementById('growthTypeSelector').value; updateGrowthTable(); }
 function updateAll() { updateTable(); updateGrowthTable(); }
@@ -1190,7 +1153,6 @@ document.addEventListener('click', function(e) {
     }
 });
 
-// Crosshair highlight on hover (both tables)
 function setupHover(tbodyId) {
     var container = document.getElementById(tbodyId);
     if (!container) return;
@@ -1217,7 +1179,6 @@ function setupHover(tbodyId) {
     });
     container.addEventListener('mouseleave', function() { clearHighlight(); });
 }
-
 function clearHighlight() {
     var els = document.querySelectorAll('.col-highlight,.row-highlight,.cell-highlight');
     for (var i=0;i<els.length;i++) els[i].classList.remove('col-highlight','row-highlight','cell-highlight');
@@ -1225,6 +1186,8 @@ function clearHighlight() {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
+    updateDatasetUI();
+    rebuildUnitSelector();
     updateRangeSelectors();
     updateGrowthTypeSelector();
     updatePeriodNote();
@@ -1234,22 +1197,33 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 """
 
-    # Replace the data placeholder
-    js = js.replace('__DATA_PLACEHOLDER__', data_json)
+    js = js.replace("__DATA_PLACEHOLDER__", data_json)
+
+    # Build dataset toggle buttons
+    toggle_buttons = []
+    for k in ordered_keys:
+        ds = datasets_by_key[k]
+        toggle_buttons.append(
+            f'<button class="dataset-toggle-btn{" active" if k == ordered_keys[0] else ""}" '
+            f'id="btnDataset-{k}" onclick="switchDataset(\'{k}\')">{ds["tab_label"]}</button>'
+        )
 
     html = '<!DOCTYPE html>\n<html lang="en">\n<head>\n'
     html += '<meta charset="UTF-8">\n'
     html += '<meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
-    html += '<title>Palissy Advisors - European Gas Balance</title>\n'
+    html += '<title>Palissy Advisors</title>\n'
     html += '<style>\n' + css + '\n</style>\n'
     html += '</head>\n<body>\n\n'
 
     html += '<div class="header">\n'
     html += '    <img src="data:image/png;base64,' + logo_b64 + '" alt="Palissy Advisors">\n'
-    html += '    <h1>European Gas Balance</h1>\n'
+    html += '    <h1 id="pageTitle"></h1>\n'
     html += '</div>\n\n'
 
-    # Controls: Period, Unit, Range From/To, Reset
+    html += '<div class="dataset-toggle-bar">\n    '
+    html += '\n    '.join(toggle_buttons)
+    html += '\n</div>\n\n'
+
     html += '<div class="controls">\n'
     html += '    <div class="control-group">\n'
     html += '        <label>Period</label>\n'
@@ -1264,16 +1238,7 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '    </div>\n'
     html += '    <div class="control-group">\n'
     html += '        <label>Unit</label>\n'
-    html += '        <select id="unitSelector" onchange="updateAll()">\n'
-    html += '            <option value="bcf" selected>bcf</option>\n'
-    html += '            <option value="bcf/d">bcf/d</option>\n'
-    html += '            <option value="bcm">bcm</option>\n'
-    html += '            <option value="mmcm/d">mmcm/d</option>\n'
-    html += '            <option value="TWh">TWh</option>\n'
-    html += '            <option value="GWh/d">GWh/d</option>\n'
-    html += '            <option value="mmt">mmt</option>\n'
-    html += '            <option value="kt/d">kt/d</option>\n'
-    html += '        </select>\n'
+    html += '        <select id="unitSelector" onchange="updateAll()"></select>\n'
     html += '    </div>\n'
     html += '    <div class="control-group">\n'
     html += '        <label>From</label>\n'
@@ -1287,7 +1252,6 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '</div>\n'
     html += '<div class="period-note" id="periodNote"></div>\n\n'
 
-    # Main data table
     html += '<div class="table-container" id="tableContainer">\n'
     html += '    <table id="dataTable">\n'
     html += '        <thead id="tableHead"></thead>\n'
@@ -1295,7 +1259,6 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '    </table>\n'
     html += '</div>\n\n'
 
-    # Growth section
     html += '<div class="growth-section">\n'
     html += '    <div class="growth-controls">\n'
     html += '        <div class="control-group">\n'
@@ -1323,54 +1286,38 @@ document.addEventListener('DOMContentLoaded', function() {
 
     html += '<script>\n' + js + '\n</script>\n\n'
     html += '</body>\n</html>'
-
     return html
 
 
 def main():
     print("=" * 60)
-    print("Palissy European Gas Balance Dashboard Generator")
+    print("Palissy Multi-Dataset Dashboard Generator")
     print("=" * 60)
 
-    # Read input
-    dates, days_per_month, rows = read_input_data()
+    datasets_by_key = {}
+    ordered_keys = []
+    for config in DATASETS:
+        print(f"\n--- Building dataset: {config['key']} ({config['title']}) ---")
+        blob = build_dataset_blob(config)
+        datasets_by_key[config["key"]] = blob
+        ordered_keys.append(config["key"])
 
-    # Detect hierarchy
-    hierarchy = detect_hierarchy(rows)
-    print(f"\nHierarchy detected:")
-    for item in hierarchy:
-        children_str = f" -> {len(item['children'])} children" if item['children'] else ""
-        print(f"  {item['label']} ({item['type']}){children_str}")
-
-    # Compute all period aggregations
-    print("\nComputing aggregations...")
-    period_results = aggregate_monthly_to_periods(dates, days_per_month, rows)
-    for name, cols in period_results.items():
-        print(f"  {name}: {len(cols)} periods")
-
-    # Build dashboard data
-    print("\nBuilding dashboard data...")
-    dashboard_data = build_dashboard_data(dates, days_per_month, rows, hierarchy, period_results)
-
-    # Load assets
     print("\nLoading assets...")
     assets = load_assets()
 
-    # Generate HTML
-    print("\nGenerating HTML dashboard...")
-    html = generate_html(dashboard_data, assets)
+    print("\nGenerating HTML...")
+    html = generate_html(datasets_by_key, ordered_keys, assets)
 
-    # Write output
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         f.write(html)
 
-    file_size = os.path.getsize(OUTPUT_FILE)
     print(f"\nDashboard saved to: {OUTPUT_FILE}")
-    print(f"  File size: {file_size / 1024:.0f} KB")
+    print(f"  File size: {os.path.getsize(OUTPUT_FILE)/1024:.0f} KB")
+    print(f"  Datasets: {', '.join(ordered_keys)}")
     print(f"  Display range: {DISPLAY_START_YEAR} - {DISPLAY_END_YEAR}")
     print("=" * 60)
-    print("Done! Open output/index.html in a browser to preview.")
+    print("Done! Open output/index.html in a browser.")
 
 
 if __name__ == "__main__":
