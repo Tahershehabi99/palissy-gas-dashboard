@@ -98,6 +98,27 @@ POWER_SOURCE_COLORS = {
     "Total Europe Electricity Generation":  "#272962",  # Palissy dark blue
 }
 
+# Gas balance series colors for the gas build-up chart (stack layers / lines).
+# Keyed by the exact row labels in the Monthly Data tab. Tuned for contrast
+# between adjacent stack layers; supply = greens/blues, consumption = warm tones.
+GAS_SERIES_COLORS = {
+    "+ Domestic Production":       "#0C5B19",  # Palissy dark green
+    "Russia":                      "#C00000",  # Palissy red
+    "Norway":                      "#272962",  # Palissy dark blue
+    "Algeria":                     "#258EEB",  # bright blue
+    "Azerbaijan":                  "#2A9D8F",  # teal
+    "Libya":                       "#E5B83A",  # gold
+    "Reverse flow into Ukraine":   "#9395A2",  # Palissy grey
+    "+ LNG Send Out":              "#539648",  # Palissy light green
+    "Power":                       "#8E44AD",  # purple
+    "Industrial":                  "#2C2C2E",  # charcoal
+    "Residential and Commercial":  "#708B5A",  # olive
+    "Adjustment":                  "#B8860B",  # dark goldenrod
+    "- Unreported Consumption":    "#92591C",  # earth brown
+    "- Exports":                   "#0B5AAB",  # Palissy light blue
+    "Storage percentage":          "#272962",  # Palissy dark blue (line)
+}
+
 DATASETS = [
     {
         "key": "gas",
@@ -116,8 +137,36 @@ DATASETS = [
         "use_hierarchy": True,
         "skip_label_rows": [],
         "charts_enabled": False,
+        # Gas uses the 2-tables-on-top / 2-charts-below layout.
+        "chart_area": True,
+        # LEFT chart = range/seasonality with a hierarchical source selector.
+        # Each entry is one selectable item in the dropdown:
+        #   kind 'pct'   -> percentage series (Storage %), mutually exclusive,
+        #                   default selection, no unit conversion.
+        #   kind 'leaf'  -> a single base row, combinable with other totals.
+        #   kind 'group' -> expands to member rows; the group total is the sum
+        #                   of all members; selecting an individual member drills
+        #                   in (exclusive to that group).
+        # abs=True means the stored values are negative (outflows) and must be
+        # shown as positive magnitudes on the chart.
+        "chart_groups": [
+            {"key": "storage", "label": "Storage percentage", "kind": "pct",
+             "rows": ["Storage percentage"], "abs": False},
+            {"key": "domprod", "label": "Domestic Production", "kind": "leaf",
+             "rows": ["+ Domestic Production"], "abs": False},
+            {"key": "imports", "label": "Imports", "kind": "group",
+             "rows": ["Russia", "Norway", "Algeria", "Azerbaijan", "Libya",
+                      "Reverse flow into Ukraine"], "abs": False},
+            {"key": "lng", "label": "LNG Send Out", "kind": "leaf",
+             "rows": ["+ LNG Send Out"], "abs": False},
+            {"key": "consumption", "label": "Consumption", "kind": "group",
+             "rows": ["Power", "Industrial", "Residential and Commercial",
+                      "Adjustment", "- Unreported Consumption"], "abs": True},
+            {"key": "exports", "label": "Exports", "kind": "leaf",
+             "rows": ["- Exports"], "abs": True},
+        ],
         "total_row": None,
-        "source_colors": {},
+        "source_colors": GAS_SERIES_COLORS,
     },
     {
         "key": "power",
@@ -146,6 +195,21 @@ DATASETS = [
         # contributor sits at the top of the table / bottom of the stack.
         "sort_by_year": 2025,
     },
+]
+
+# ============================================================
+# EMBED TABS
+# External dashboards surfaced as tabs via iframe. These are the live,
+# daily-updated pages from the separate "Storage and LNG" project
+# (eu-gas-dashboard GitHub Pages). We embed them rather than re-implementing
+# so their independent daily pipeline keeps updating them — this dashboard
+# just surfaces them as extra tabs. "?embedded=1" hides their own logo.
+# ============================================================
+EMBED_TABS = [
+    {"key": "storage", "label": "Storage",
+     "url": "https://tahershehabi99.github.io/eu-gas-dashboard/storage.html?embedded=1"},
+    {"key": "lng", "label": "LNG Sendout",
+     "url": "https://tahershehabi99.github.io/eu-gas-dashboard/lng.html?embedded=1"},
 ]
 
 
@@ -481,6 +545,14 @@ def build_dataset_blob(config):
         "unit_config": config["unit_config"],
         "use_hierarchy": config["use_hierarchy"],
         "charts_enabled": config.get("charts_enabled", False),
+        # chart_area = does this dataset use the charts layout (tables on top,
+        # chart boxes below). Defaults to charts_enabled so power gets it for free.
+        "chart_area": config.get("chart_area", config.get("charts_enabled", False)),
+        # Per-slot chart availability. Power has both; gas (chart_groups) has the
+        # left range chart only (right stays a placeholder until specified).
+        "has_range": config.get("charts_enabled", False) or bool(config.get("chart_groups")),
+        "has_buildup": config.get("charts_enabled", False) or bool(config.get("chart_groups")),
+        "chart_groups": config.get("chart_groups"),
         "total_row": config.get("total_row"),
         "source_colors": config.get("source_colors", {}),
         "views": views,
@@ -779,12 +851,16 @@ td.g-neg { color: #C00000; }
     gap: 16px;
     margin: 0 20px 12px;
 }
-body.dataset-power .main-grid {
+/* Datasets that declare chart_area use a 2-tables-on-top / 2-charts-below grid.
+   Keyed off the .charts-area body class (set when DATA.chart_area), so any
+   dataset (power now, gas/LNG/storage later) opts in via config, not CSS. */
+body.charts-area .main-grid {
     grid-template-columns: 1fr 1fr;
-    grid-template-rows: auto auto;
+    grid-template-rows: auto auto auto;
     grid-template-areas:
-        "table   seasonality"
-        "growth  buildup";
+        "table        table"
+        "growth       growth"
+        "seasonality  buildup";
 }
 .quad-table       { grid-area: table; }
 .quad-growth      { grid-area: growth; }
@@ -797,9 +873,52 @@ body.dataset-power .main-grid {
 }
 .grid-quad .growth-section { margin: 0; }
 
-/* Charts are hidden unless the active dataset declares charts_enabled */
+/* Real charts show per-slot, based on which charts the dataset provides.
+   Left slot = range/seasonality (has-range); right slot = buildup (has-buildup). */
 .chart-quadrant { display: none; }
-body.dataset-power .chart-quadrant { display: flex; }
+body.has-range  .quad-seasonality.chart-quadrant { display: flex; }
+body.has-buildup .quad-buildup.chart-quadrant    { display: flex; }
+
+/* Placeholder chart boxes: shown per-slot when that slot has no real chart yet. */
+.chart-placeholder-quad { display: none; flex-direction: column; min-width: 0; }
+.chart-placeholder-quad.left  { grid-area: seasonality; }
+.chart-placeholder-quad.right { grid-area: buildup; }
+body.charts-area:not(.has-range)   .chart-placeholder-quad.left  { display: flex; }
+body.charts-area:not(.has-buildup) .chart-placeholder-quad.right { display: flex; }
+
+/* Embed tabs (Storage / LNG Sendout): an external live page in an iframe.
+   When active, the data dashboard (controls + grid) is hidden and the iframe
+   fills the area below the toggle bar. */
+.embed-container { display: none; margin: 0 20px 12px; }
+body.embed-active .embed-container { display: block; }
+body.embed-active .controls,
+body.embed-active .period-note,
+body.embed-active .main-grid { display: none; }
+.embed-container iframe {
+    width: 100%;
+    height: calc(100vh - 150px);
+    min-height: 620px;
+    border: none;
+    display: block;
+    background: #ffffff;
+}
+@media (max-width: 768px) {
+    .embed-container { margin: 0 8px 8px; }
+    .embed-container iframe { height: calc(100vh - 120px); }
+}
+.chart-placeholder-box {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 320px;
+    border: 1px dashed """ + border + """;
+    border-radius: 8px;
+    background: """ + card + """;
+    color: """ + grey + """;
+    font-size: 13px;
+    letter-spacing: 0.3px;
+}
 
 /* Value-mode toggle above the generation table (Power only) */
 .table-value-toggle-bar { display: none; padding: 0 0 8px; }
@@ -813,7 +932,8 @@ body.dataset-power .table-value-toggle-bar { display: flex; justify-content: fle
     cursor: pointer; transition: all 0.15s;
 }
 .value-toggle button:first-child { border-radius: 7px 0 0 7px; }
-.value-toggle button:last-child  { border-radius: 0 7px 7px 0; border-left: none; }
+.value-toggle button:last-child  { border-radius: 0 7px 7px 0; }
+.value-toggle button:not(:first-child) { border-left: none; }  /* clean joins for 3-button groups */
 .value-toggle button.active { background: """ + db + """; color: #fff; border-color: """ + db + """; }
 
 .unit-efficiency-note {
@@ -832,6 +952,12 @@ body.dataset-power .table-value-toggle-bar { display: flex; justify-content: fle
 .chart-controls .control-group select {
     font-size: 11.5px; padding: 6px 28px 6px 12px;
 }
+
+/* The buildup (right) slot carries different controls per dataset: power keeps
+   Sources/Period/From/To; gas uses a chart-type toggle + Series picker. */
+.buildup-controls-power, .buildup-controls-gas { display: none; }
+body.dataset-power .buildup-controls-power { display: flex; }
+body.dataset-gas   .buildup-controls-gas   { display: flex; }
 
 .chart-title {
     text-align: center; font-size: 11px; font-weight: bold;
@@ -945,10 +1071,15 @@ body.dataset-power .table-value-toggle-bar { display: flex; justify-content: fle
 }
 .ms-item.ms-disabled { opacity: 0.4; cursor: not-allowed; }
 .ms-item.ms-disabled input { cursor: not-allowed; }
+/* Hierarchical (gas range chart) selector: group headers + indented members. */
+.ms-item.ms-group-header { font-weight: bold; }
+.ms-item.ms-child { padding-left: 28px; font-size: 11.5px; color: """ + db + """; }
+.ms-item.ms-child span { opacity: 0.92; }
+.ms-divider { border-top: 1px solid """ + border + """; margin: 4px 6px; }
 
 /* Responsive: stack 2x2 grid on narrow screens */
 @media (max-width: 1100px) {
-    body.dataset-power .main-grid {
+    body.charts-area .main-grid {
         grid-template-columns: 1fr;
         grid-template-rows: auto auto auto auto;
         grid-template-areas:
@@ -974,6 +1105,39 @@ var ALL_DATASETS = ROOT.datasets;
 var DATASET_ORDER = ROOT.order;
 var currentKey = DATASET_ORDER[0];
 var DATA = ALL_DATASETS[currentKey];
+
+// Embed tabs (Storage / LNG Sendout) — external live pages shown via iframe.
+var EMBED_TABS = __EMBED_TABS__;
+var EMBED_MAP = {};
+for (var _e=0; _e<EMBED_TABS.length; _e++) EMBED_MAP[EMBED_TABS[_e].key] = EMBED_TABS[_e];
+// Every tab button, in bar order: data datasets first, then embed tabs.
+var ALL_TAB_KEYS = DATASET_ORDER.concat(EMBED_TABS.map(function(t){ return t.key; }));
+var embedActive = false;  // true while an embed (Storage/LNG) tab is showing
+
+function setActiveTabButton(key) {
+    for (var i=0;i<ALL_TAB_KEYS.length;i++) {
+        var btn = document.getElementById('btnDataset-'+ALL_TAB_KEYS[i]);
+        if (btn) btn.classList.toggle('active', ALL_TAB_KEYS[i] === key);
+    }
+}
+
+// Show an embed tab: hide the data dashboard sections, show the iframe.
+// The iframe src is set lazily and only when switching to a different embed
+// page, so toggling data<->embed for the same page doesn't reload it.
+function showEmbedTab(key) {
+    var tab = EMBED_MAP[key];
+    if (!tab) return;
+    embedActive = true;
+    setActiveTabButton(key);
+    document.body.className = 'embed-active embed-' + key;
+    document.getElementById('pageTitle').textContent = tab.label;
+    document.title = 'Palissy Advisors - ' + tab.label;
+    var frame = document.getElementById('embedFrame');
+    if (frame && frame.getAttribute('data-key') !== key) {
+        frame.src = tab.url;
+        frame.setAttribute('data-key', key);
+    }
+}
 
 var expandedMain = {};
 var expandedGrowth = {};
@@ -1284,20 +1448,25 @@ function updateEfficiencyNote() {
 function updateDatasetUI() {
     document.getElementById('pageTitle').textContent = DATA.title;
     document.title = 'Palissy Advisors - ' + DATA.title;
-    document.body.className = 'dataset-' + currentKey;
-    for (var i=0;i<DATASET_ORDER.length;i++) {
-        var k = DATASET_ORDER[i];
-        var btn = document.getElementById('btnDataset-'+k);
-        if (btn) btn.classList.toggle('active', k === currentKey);
-    }
+    var bodyCls = 'dataset-' + currentKey;
+    if (DATA.chart_area) bodyCls += ' charts-area';
+    if (DATA.has_range) bodyCls += ' has-range';
+    if (DATA.has_buildup) bodyCls += ' has-buildup';
+    document.body.className = bodyCls;
+    setActiveTabButton(currentKey);
 }
 
 function switchDataset(key) {
-    if (key === currentKey) return;
+    if (key === currentKey && !embedActive) return;  // leaving an embed tab must re-render
+    embedActive = false;
     currentKey = key;
     DATA = ALL_DATASETS[key];
     expandedMain = {};
     expandedGrowth = {};
+    // The two chart slots share canvases across datasets — tear down any live
+    // Chart.js instances so the incoming dataset builds fresh ones.
+    if (seasonalityChart) { seasonalityChart.destroy(); seasonalityChart = null; }
+    if (buildupChart)     { buildupChart.destroy();     buildupChart = null; }
     updateDatasetUI();
     rebuildUnitSelector();
     updateRangeSelectors();
@@ -1307,6 +1476,9 @@ function switchDataset(key) {
         rebuildChartControls();
         updateAll();
         updateCharts();
+    } else if (DATA.chart_groups) {
+        rebuildGasChartControls();
+        updateAll();
     } else {
         updateAll();
     }
@@ -1877,6 +2049,7 @@ function updateBuildupChart() {
         data: { labels: labels, datasets: datasets },
         options: chartOptionsStacked(unitKey)
     });
+    buildupStackHover = true;
     initBuildupHover(canvas);
     renderHtmlLegend(buildupChart, 'buildupLegend', {});
 }
@@ -1995,6 +2168,7 @@ function renderHtmlLegend(chart, containerId, opts) {
    dataset manually by mapping the cursor's Y position into the cumulative
    stack at the cursor's X column. */
 var buildupHoverInited = false;
+var buildupStackHover = true;  // false in gas line mode (no cumulative-stack hover)
 function initBuildupHover(canvas) {
     if (buildupHoverInited) return;
     buildupHoverInited = true;
@@ -2004,6 +2178,7 @@ function initBuildupHover(canvas) {
 
 function onBuildupMousemove(e) {
     if (!buildupChart) return;
+    if (!buildupStackHover) { applyBuildupHover(-1); return; }  // line mode: no stack-walk fade
     var canvas = buildupChart.canvas;
     var rect = canvas.getBoundingClientRect();
     var cx = e.clientX - rect.left;
@@ -2073,6 +2248,8 @@ function applyBuildupHover(hoveredIdx) {
 /* ---- Chart-control rebuilders ---- */
 function rebuildChartControls() {
     if (!DATA.charts_enabled) return;
+    var lab = document.getElementById('rangeSourceLabel');
+    if (lab) lab.textContent = 'Sources';
     var individuals = getIndividualSourceLabels();
     var totalLabel = DATA.total_row;
     buildMultiSelect('msSeasonality', individuals, totalLabel, [totalLabel], function() { updateSeasonalityChart(); });
@@ -2131,6 +2308,504 @@ function updateCharts() {
     updateBuildupChart();
 }
 
+/* Dispatcher: power uses the flat seasonality chart, gas uses the hierarchical
+   range chart. Both render into the same left-slot canvas. */
+function updateRangeChart() {
+    if (!DATA) return;
+    if (DATA.chart_groups) updateGasRangeChart();
+    else if (DATA.charts_enabled) updateSeasonalityChart();
+}
+
+/* ============================================================
+   GAS RANGE CHART (left slot) — hierarchical source selector.
+   Differs from the power seasonality chart in three ways:
+     - sources are grouped (Imports / Consumption expand to members),
+     - consumption & exports are shown as positive magnitudes (abs),
+     - Storage percentage is a special %-axis series, mutually exclusive
+       with everything else, and the default selection.
+   The summed selection is drawn with the same prev/current/next gas-year
+   lines + n-year average + min/max band styling as the power chart.
+   ============================================================ */
+var gasRangeSel = [];  // selected base-row labels (atoms)
+
+function gasGroups() { return DATA.chart_groups || []; }
+function gasEntryForKey(k) { var g=gasGroups(); for (var i=0;i<g.length;i++) if (g[i].key===k) return g[i]; return null; }
+function gasStorageRow() { var e=null,g=gasGroups(); for (var i=0;i<g.length;i++) if (g[i].kind==='pct') e=g[i]; return e?e.rows[0]:null; }
+// Map a base-row label -> its owning chart_groups entry.
+function gasEntryForRow(rowLabel) {
+    var g=gasGroups();
+    for (var i=0;i<g.length;i++) for (var j=0;j<g[i].rows.length;j++) if (g[i].rows[j]===rowLabel) return g[i];
+    return null;
+}
+function gasRowsSelectedIn(entry) {
+    var out=[]; for (var i=0;i<entry.rows.length;i++) if (gasRangeSel.indexOf(entry.rows[i])>=0) out.push(entry.rows[i]); return out;
+}
+function gasEntryFull(entry)    { return gasRowsSelectedIn(entry).length === entry.rows.length; }
+function gasEntryPartial(entry) { var n=gasRowsSelectedIn(entry).length; return n>0 && n<entry.rows.length; }
+function gasAnyPartial() { var g=gasGroups(); for (var i=0;i<g.length;i++) if (g[i].kind==='group' && gasEntryPartial(g[i])) return g[i]; return null; }
+function gasStorageSelected() { var sr=gasStorageRow(); return sr && gasRangeSel.indexOf(sr)>=0; }
+
+// --- selection state machine (click-time auto-resolution) ---
+function gasClickStorage() { var sr=gasStorageRow(); gasRangeSel = sr ? [sr] : []; }
+
+function gasClickTotal(entry) {
+    // Leaf or group header: an aggregate-combinable total. Exits any drill.
+    var sr=gasStorageRow();
+    var keep=[];
+    for (var i=0;i<gasRangeSel.length;i++) {
+        var lab=gasRangeSel[i];
+        if (lab===sr) continue;                              // drop storage
+        var owner=gasEntryForRow(lab);
+        if (owner && owner.kind==='group' && gasEntryPartial(owner)) continue; // drop drilled (partial) groups
+        keep.push(lab);
+    }
+    gasRangeSel = keep;
+    // Is this total currently fully selected (against the cleaned-up selection)?
+    var sel=0; for (var i=0;i<entry.rows.length;i++) if (gasRangeSel.indexOf(entry.rows[i])>=0) sel++;
+    if (sel === entry.rows.length) {
+        // currently full -> turn the whole total off
+        gasRangeSel = gasRangeSel.filter(function(l){ return entry.rows.indexOf(l)<0; });
+    } else {
+        // turn the whole total on (add any missing members)
+        for (var i=0;i<entry.rows.length;i++) if (gasRangeSel.indexOf(entry.rows[i])<0) gasRangeSel.push(entry.rows[i]);
+    }
+}
+
+function gasClickChild(entry, rowLabel) {
+    // Drilling into one group: selection becomes only this group's members.
+    var start = gasRowsSelectedIn(entry);
+    var pos = start.indexOf(rowLabel);
+    if (pos>=0) start.splice(pos,1); else start.push(rowLabel);
+    gasRangeSel = start;  // exclusive to this group
+}
+
+function gasNormalizeSelection() {
+    if (gasRangeSel.length===0) { var sr=gasStorageRow(); gasRangeSel = sr?[sr]:[]; }
+}
+
+// Resolve current selection to the rows to sum + pct flag + a readable label.
+function gasResolveSelection() {
+    if (gasStorageSelected()) {
+        return { rows:[{label:gasStorageRow(), abs:false}], isPct:true, label:'Storage %' };
+    }
+    var rows=[], parts=[], g=gasGroups();
+    for (var i=0;i<g.length;i++) {
+        var e=g[i];
+        if (e.kind==='pct') continue;
+        var selRows = gasRowsSelectedIn(e);
+        if (selRows.length===0) continue;
+        for (var j=0;j<selRows.length;j++) rows.push({label:selRows[j], abs:e.abs});
+        if (e.kind==='group') {
+            if (gasEntryFull(e)) parts.push(e.label);
+            else parts.push(e.label + ' (' + selRows.join(', ') + ')');
+        } else {
+            parts.push(e.label);
+        }
+    }
+    return { rows:rows, isPct:false, label: parts.join(' + ') || '—' };
+}
+
+function gasSumAtIndex(rows, idx) {
+    var sum=0;
+    for (var i=0;i<rows.length;i++) {
+        var row=getRowByLabel(rows[i].label);
+        if (row && idx>=0 && idx<row.base.length) {
+            var v=row.base[idx];
+            sum += rows[i].abs ? Math.abs(v) : v;
+        }
+    }
+    return sum;
+}
+
+// --- selector widget ---
+function buildGasRangeSelector() {
+    var container = document.getElementById('msSeasonality');
+    if (!container) return;
+    container.innerHTML='';
+    container.classList.add('multi-select');
+
+    var button = document.createElement('button');
+    button.type='button'; button.className='ms-button';
+    container.appendChild(button);
+    var panel = document.createElement('div');
+    panel.className='ms-panel';
+    container.appendChild(panel);
+
+    var g = gasGroups();
+    for (var i=0;i<g.length;i++) {
+        var e = g[i];
+        if (e.kind==='pct') {
+            panel.appendChild(gasMakeItem(e.label, '', function(){ gasClickStorage(); }));
+            var div=document.createElement('div'); div.className='ms-divider'; panel.appendChild(div);
+        } else if (e.kind==='leaf') {
+            (function(entry){ panel.appendChild(gasMakeItem(entry.label, '', function(){ gasClickTotal(entry); })); })(e);
+        } else { // group
+            (function(entry){
+                panel.appendChild(gasMakeItem(entry.label, 'ms-group-header', function(){ gasClickTotal(entry); }, entry.key));
+                for (var j=0;j<entry.rows.length;j++) {
+                    (function(rowLabel){
+                        panel.appendChild(gasMakeItem(rowLabel, 'ms-child', function(){ gasClickChild(entry, rowLabel); }, entry.key+'::'+rowLabel));
+                    })(entry.rows[j]);
+                }
+            })(e);
+        }
+    }
+
+    button.addEventListener('click', function(ev){ ev.stopPropagation(); container.classList.toggle('open'); });
+    gasRefreshSelector();
+}
+
+function gasMakeItem(text, extraCls, onClick, cbKey) {
+    var lbl=document.createElement('label');
+    lbl.className='ms-item' + (extraCls ? ' '+extraCls : '');
+    var cb=document.createElement('input');
+    cb.type='checkbox';
+    cb.setAttribute('data-key', cbKey || text);
+    var sp=document.createElement('span');
+    sp.textContent=text;
+    lbl.appendChild(cb); lbl.appendChild(sp);
+    cb.addEventListener('change', function(){
+        onClick();
+        gasNormalizeSelection();
+        gasRefreshSelector();
+        gasRangeButtonLabel();
+        updateGasRangeChart();
+    });
+    return lbl;
+}
+
+// Sync every checkbox (checked / indeterminate) to gasRangeSel.
+function gasRefreshSelector() {
+    var g=gasGroups();
+    for (var i=0;i<g.length;i++) {
+        var e=g[i];
+        if (e.kind==='pct') {
+            gasSetCb(e.label, gasStorageSelected(), false);
+        } else if (e.kind==='leaf') {
+            gasSetCb(e.label, gasRangeSel.indexOf(e.rows[0])>=0, false);
+        } else {
+            gasSetCb(e.key, gasEntryFull(e), gasEntryPartial(e));
+            for (var j=0;j<e.rows.length;j++) gasSetCb(e.key+'::'+e.rows[j], gasRangeSel.indexOf(e.rows[j])>=0, false);
+        }
+    }
+    gasRangeButtonLabel();
+}
+function gasSetCb(key, checked, indeterminate) {
+    var cb=document.querySelector('#msSeasonality input[data-key="'+CSS.escape(key)+'"]');
+    if (!cb) return;
+    cb.checked=!!checked;
+    cb.indeterminate=!!indeterminate;
+}
+
+function gasRangeButtonLabel() {
+    var container=document.getElementById('msSeasonality');
+    if (!container) return;
+    var btn=container.querySelector('.ms-button');
+    if (!btn) return;
+    var res=gasResolveSelection();
+    var txt=res.label;
+    if (res.isPct) txt='Storage %';
+    else {
+        var parts=res.label.split(' + ');
+        if (parts.length>2) txt=parts[0]+' + '+(parts.length-1)+' more';
+    }
+    btn.textContent=txt;
+    btn.title=res.label;
+}
+
+function updateGasRangeChart() {
+    if (!DATA || !DATA.chart_groups) return;
+    var res=gasResolveSelection();
+    var unitKey=document.getElementById('unitSelector').value;
+    var lookbackEl=document.getElementById('seasonalityLookback');
+    var lookback=lookbackEl ? (parseInt(lookbackEl.value)||5) : 5;
+    var cgy=currentGY(), prevGY=cgy-1, nextGY=cgy+1;
+    var labels=gyMonthLabels();
+
+    function valAt(idx) {
+        if (idx<0) return null;
+        var b=gasSumAtIndex(res.rows, idx);
+        if (res.isPct) return b*100;
+        var d=DATA.views.Monthly.days[idx];
+        return applyUnitConversion(b, unitKey, d);
+    }
+    function gyValues(gy) {
+        var out=[];
+        for (var i=0;i<12;i++) {
+            var amt=gyMonthToActual(gy,i);
+            out.push(valAt(findMonthlyIdx(amt.year, amt.month)));
+        }
+        return out;
+    }
+    var prevVals=gyValues(prevGY), currVals=gyValues(cgy), nextVals=gyValues(nextGY);
+
+    var lbStart=cgy-lookback, lbEnd=cgy-1;
+    var avg=[], mn=[], mx=[];
+    for (var mo=0;mo<12;mo++) {
+        var samples=[];
+        for (var gy=lbStart;gy<=lbEnd;gy++) {
+            var amt=gyMonthToActual(gy,mo);
+            var v=valAt(findMonthlyIdx(amt.year, amt.month));
+            if (v!==null && v!==undefined) samples.push(v);
+        }
+        if (samples.length===0) { avg.push(null); mn.push(null); mx.push(null); continue; }
+        var s=0; for (var k=0;k<samples.length;k++) s+=samples[k];
+        avg.push(s/samples.length); mn.push(Math.min.apply(null,samples)); mx.push(Math.max.apply(null,samples));
+    }
+
+    var unitLabel = res.isPct ? '%' : getHeaderUnitLabel(unitKey);
+    document.getElementById('seasonalityTitle').textContent = 'Seasonality';
+
+    var prevLabel='GY '+String(prevGY).slice(-2)+'/'+String(prevGY+1).slice(-2);
+    var curLabel ='GY '+String(cgy).slice(-2)   +'/'+String(cgy+1).slice(-2)   +' (current)';
+    var nextLabel='GY '+String(nextGY).slice(-2)+'/'+String(nextGY+1).slice(-2)+' (forecast)';
+    var datasets=[
+        { label: lookback+'y max',     data: mx,       borderColor:'rgba(0,0,0,0)', backgroundColor:'rgba(0,0,0,0)', pointRadius:0, fill:false, order:20 },
+        { label: lookback+'y range',   data: mn,       borderColor:'rgba(0,0,0,0)', backgroundColor:'rgba(147,149,162,0.28)', pointRadius:0, fill:'-1', order:19 },
+        { label: lookback+'y average', data: avg,      borderColor:'#272962', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, pointRadius:0, fill:false, tension:0.25, order:4 },
+        { label: prevLabel,            data: prevVals, borderColor:'#0C5B19', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, pointRadius:2, fill:false, tension:0.25, order:3 },
+        { label: curLabel,             data: currVals, borderColor:'#C00000', backgroundColor:'rgba(0,0,0,0)', borderWidth:2.6, pointRadius:3, fill:false, tension:0.25, order:1 },
+        { label: nextLabel,            data: nextVals, borderColor:'#539648', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, borderDash:[6,4], pointRadius:2, fill:false, tension:0.25, order:2 },
+    ];
+
+    var opts=chartOptionsLine(unitKey);
+    opts.scales.y.title.text=unitLabel;
+    if (res.isPct) opts.scales.y.ticks.callback = function(v){ return v + '%'; };
+
+    if (seasonalityChart) {
+        seasonalityChart.data.labels=labels;
+        seasonalityChart.data.datasets=datasets;
+        seasonalityChart.options=opts;
+        seasonalityChart.update();
+    } else {
+        var canvas=document.getElementById('seasonalityCanvas');
+        if (!canvas) return;
+        seasonalityChart=new Chart(canvas, { type:'line', data:{labels:labels, datasets:datasets}, options:opts });
+    }
+    renderHtmlLegend(seasonalityChart, 'seasonalityLegend', { filter: function(label){ return !(label||'').endsWith(' max'); } });
+}
+
+function rebuildGasChartControls() {
+    if (!DATA.chart_groups) return;
+    var lab=document.getElementById('rangeSourceLabel');
+    if (lab) lab.textContent='Series';        // gas: don't call it "Sources"
+    var sr=gasStorageRow();
+    gasRangeSel = sr ? [sr] : [];             // range chart default = Storage %
+    buildGasRangeSelector();
+    populateLookbackOptions();
+    // Build-up (right) chart: default = stacked bar, all volume series selected.
+    gasBuildupType='bar';
+    gasBuildupSelectAllVolumes();
+    buildGasBuildupSelector();
+    var btns=['bar','area','line'];
+    for (var i=0;i<btns.length;i++){ var b=document.getElementById('btnGasBuild-'+btns[i]); if (b) b.className=(btns[i]==='bar')?'active':''; }
+}
+
+/* ============================================================
+   GAS BUILD-UP CHART (right slot) — stacked bar / stacked area / line.
+   Series = gas balance items (Domestic Production .. Exports), with Imports
+   and Consumption expanding to members; consumption & exports are shown as
+   positive magnitudes. Storage % is a line-only, mutually-exclusive %-series.
+   Period / range / unit all follow the top table (getVisibleIndices()).
+   ============================================================ */
+var gasBuildupType = 'bar';   // 'bar' | 'area' | 'line'
+var gasBuildupSel = [];        // selected base-row labels (leaves)
+
+// Stackable leaves (everything except Storage %), in display/stack order.
+function gasBuildupLeaves() {
+    var out=[], g=gasGroups();
+    for (var i=0;i<g.length;i++) {
+        var e=g[i];
+        if (e.kind==='pct') continue;
+        for (var j=0;j<e.rows.length;j++)
+            out.push({row:e.rows[j], abs:e.abs, isGroup:e.kind==='group'});
+    }
+    return out;
+}
+function gasBuildupSelectAllVolumes() { gasBuildupSel = gasBuildupLeaves().map(function(l){return l.row;}); }
+function gasToggleInArr(arr,v){ var p=arr.indexOf(v); if(p>=0) arr.splice(p,1); else arr.push(v); }
+
+function setGasBuildupType(t) {
+    gasBuildupType=t;
+    var btns=['bar','area','line'];
+    for (var i=0;i<btns.length;i++){ var b=document.getElementById('btnGasBuild-'+btns[i]); if (b) b.className=(btns[i]===t)?'active':''; }
+    // Storage % is line-only; leaving line with it selected reverts to all volumes.
+    if (t!=='line') {
+        var sr=gasStorageRow();
+        if (gasBuildupSel.indexOf(sr)>=0) gasBuildupSelectAllVolumes();
+    }
+    buildGasBuildupSelector();   // re-render (adds/removes the Storage % option)
+    updateGasBuildupChart();
+}
+
+function buildGasBuildupSelector() {
+    var container=document.getElementById('msGasBuildup');
+    if (!container) return;
+    container.innerHTML='';
+    container.classList.add('multi-select');
+    var button=document.createElement('button'); button.type='button'; button.className='ms-button'; container.appendChild(button);
+    var panel=document.createElement('div'); panel.className='ms-panel'; container.appendChild(panel);
+
+    // "All" select-all at the very top (selects every series except Storage %).
+    panel.appendChild(gasBuildItem('All','ms-group-header','__ALL__','all',null));
+    var topDiv=document.createElement('div'); topDiv.className='ms-divider'; panel.appendChild(topDiv);
+
+    var g=gasGroups(), pctEntry=null;
+    for (var i=0;i<g.length;i++) {
+        var e=g[i];
+        if (e.kind==='pct') { pctEntry=e; continue; }   // Storage % rendered at the bottom
+        else if (e.kind==='leaf') {
+            panel.appendChild(gasBuildItem(e.label,'',e.rows[0],'leaf',null));
+        } else {
+            (function(entry){
+                panel.appendChild(gasBuildItem(entry.label,'ms-group-header',entry.key,'group',entry));
+                for (var j=0;j<entry.rows.length;j++)
+                    panel.appendChild(gasBuildItem(entry.rows[j],'ms-child',entry.rows[j],'child',entry));
+            })(e);
+        }
+    }
+    // Storage % at the very bottom, line mode only (it uses a separate % axis).
+    if (gasBuildupType==='line' && pctEntry) {
+        var botDiv=document.createElement('div'); botDiv.className='ms-divider'; panel.appendChild(botDiv);
+        panel.appendChild(gasBuildItem(pctEntry.label,'',pctEntry.rows[0],'storage',null));
+    }
+    button.addEventListener('click', function(ev){ ev.stopPropagation(); container.classList.toggle('open'); });
+    gasBuildupRefresh();
+}
+
+function gasBuildItem(text,extraCls,key,kind,entry) {
+    var lbl=document.createElement('label'); lbl.className='ms-item'+(extraCls?' '+extraCls:'');
+    var cb=document.createElement('input'); cb.type='checkbox'; cb.setAttribute('data-key',key);
+    var sp=document.createElement('span'); sp.textContent=text;
+    lbl.appendChild(cb); lbl.appendChild(sp);
+    cb.addEventListener('change', function(){ gasBuildupClick(kind,key,entry); gasBuildupRefresh(); updateGasBuildupChart(); });
+    return lbl;
+}
+
+function gasBuildupClick(kind,key,entry) {
+    var sr=gasStorageRow();
+    if (kind==='storage') {
+        if (gasBuildupSel.length===1 && gasBuildupSel[0]===sr) gasBuildupSelectAllVolumes(); // toggle off -> volumes
+        else gasBuildupSel=[sr];                                                             // mutex: storage alone
+        return;
+    }
+    if (kind==='all') {
+        var allLeaves=gasBuildupLeaves().map(function(l){ return l.row; });
+        var allIn=allLeaves.every(function(r){ return gasBuildupSel.indexOf(r)>=0; });
+        gasBuildupSel = allIn ? [] : allLeaves.slice();  // toggle every series (storage cleared either way)
+        return;
+    }
+    gasBuildupSel = gasBuildupSel.filter(function(l){ return l!==sr; });  // any volume click clears storage
+    if (kind==='group') {
+        var rows=(entry||gasEntryForKey(key)).rows;
+        var allIn=rows.every(function(r){ return gasBuildupSel.indexOf(r)>=0; });
+        if (allIn) gasBuildupSel=gasBuildupSel.filter(function(r){ return rows.indexOf(r)<0; });
+        else rows.forEach(function(r){ if (gasBuildupSel.indexOf(r)<0) gasBuildupSel.push(r); });
+    } else {
+        gasToggleInArr(gasBuildupSel,key);  // leaf or child
+    }
+}
+
+function gasBuildupRefresh() {
+    var sr=gasStorageRow(), g=gasGroups();
+    var allLeaves=gasBuildupLeaves().map(function(l){ return l.row; });
+    var nAll=allLeaves.filter(function(r){ return gasBuildupSel.indexOf(r)>=0; }).length;
+    gasBuildSetCb('__ALL__', nAll===allLeaves.length, nAll>0 && nAll<allLeaves.length);
+    for (var i=0;i<g.length;i++) {
+        var e=g[i];
+        if (e.kind==='pct')      { gasBuildSetCb(e.rows[0], gasBuildupSel.indexOf(sr)>=0, false); }
+        else if (e.kind==='leaf'){ gasBuildSetCb(e.rows[0], gasBuildupSel.indexOf(e.rows[0])>=0, false); }
+        else {
+            var n=e.rows.filter(function(r){ return gasBuildupSel.indexOf(r)>=0; }).length;
+            gasBuildSetCb(e.key, n===e.rows.length, n>0 && n<e.rows.length);
+            for (var j=0;j<e.rows.length;j++) gasBuildSetCb(e.rows[j], gasBuildupSel.indexOf(e.rows[j])>=0, false);
+        }
+    }
+    gasBuildupButtonLabel();
+}
+function gasBuildSetCb(key,checked,indet) {
+    var cb=document.querySelector('#msGasBuildup input[data-key="'+CSS.escape(key)+'"]');
+    if (!cb) return; cb.checked=!!checked; cb.indeterminate=!!indet;
+}
+function gasBuildupButtonLabel() {
+    var c=document.getElementById('msGasBuildup'); if (!c) return;
+    var btn=c.querySelector('.ms-button'); if (!btn) return;
+    var sr=gasStorageRow();
+    if (gasBuildupSel.length===1 && gasBuildupSel[0]===sr) { btn.textContent='Storage %'; btn.title='Storage percentage'; return; }
+    var allLeaves=gasBuildupLeaves().map(function(l){ return l.row; });
+    var allIn=allLeaves.every(function(r){ return gasBuildupSel.indexOf(r)>=0; });
+    if (allIn) { btn.textContent='All'; btn.title=allLeaves.join(', '); return; }
+    var n=gasBuildupSel.length;
+    if (n===0) { btn.textContent='None'; btn.title=''; return; }
+    var clean=function(s){ return s.replace(/^[+-]\s*/,''); };
+    btn.textContent = (n<=2) ? gasBuildupSel.map(clean).join(' + ') : clean(gasBuildupSel[0])+' + '+(n-1)+' more';
+    btn.title = gasBuildupSel.join(', ');
+}
+
+function updateGasBuildupChart() {
+    if (!DATA || !DATA.chart_groups) return;
+    var unitKey=document.getElementById('unitSelector').value;
+    var period=document.getElementById('periodSelector').value;
+    var view=DATA.views[period];
+    if (!view) return;
+    var vis=getVisibleIndices();
+    var labels=[]; for (var k=0;k<vis.length;k++) labels.push(view.short_columns[vis[k]]||view.columns[vis[k]]);
+
+    var sr=gasStorageRow();
+    var isStoragePct = (gasBuildupSel.length===1 && gasBuildupSel[0]===sr);
+    var stacked = (gasBuildupType==='bar' || gasBuildupType==='area') && !isStoragePct;
+
+    var datasets=[];
+    if (isStoragePct) {
+        var row=getRowByLabel(sr), data=[];
+        for (var k=0;k<vis.length;k++) data.push(row ? row.base[vis[k]]*100 : null);
+        datasets.push({ label:'Storage %', data:data, borderColor:'#272962', backgroundColor:'rgba(0,0,0,0)', borderWidth:2, pointRadius:0, fill:false, tension:0.2 });
+    } else {
+        var leaves=gasBuildupLeaves().filter(function(l){ return gasBuildupSel.indexOf(l.row)>=0; });
+        for (var s=0;s<leaves.length;s++) {
+            var lf=leaves[s], row=getRowByLabel(lf.row), data=[];
+            for (var k=0;k<vis.length;k++) {
+                var ci=vis[k];
+                var raw = row ? (lf.abs ? Math.abs(row.base[ci]) : row.base[ci]) : 0;
+                var v = applyUnitConversion(raw, unitKey, view.days[ci]);
+                if (stacked && v<0) v=0;   // keep stacks clean
+                data.push(v);
+            }
+            var color=getSourceColor(lf.row);
+            var ds={ label:lf.row, data:data, borderColor:color, pointRadius:0, tension:0.2 };
+            if (gasBuildupType==='bar') {
+                ds.backgroundColor=color+'CC'; ds.borderWidth=1; ds.stack='gasb';
+            } else if (gasBuildupType==='area') {
+                ds.backgroundColor=color+'CC'; ds.borderWidth=1; ds.stack='gasb'; ds.fill = (s===0)?'origin':'-1';
+            } else {  // line
+                ds.backgroundColor='rgba(0,0,0,0)'; ds.borderWidth=2; ds.fill=false;
+            }
+            datasets.push(ds);
+        }
+    }
+
+    var unitLabel = isStoragePct ? '%' : getHeaderUnitLabel(unitKey);
+    document.getElementById('buildupTitle').textContent = 'Gas balance';
+
+    var chartType = (gasBuildupType==='bar') ? 'bar' : 'line';
+    var opts = stacked ? chartOptionsStacked(unitKey) : chartOptionsLine(unitKey);
+    opts.scales.y.title.text = unitLabel;
+    if (isStoragePct) opts.scales.y.ticks.callback = function(v){ return v + '%'; };
+
+    if (buildupChart) { buildupChart.destroy(); buildupChart=null; }
+    var canvas=document.getElementById('buildupCanvas'); if (!canvas) return;
+    buildupChart=new Chart(canvas, { type:chartType, data:{labels:labels, datasets:datasets}, options:opts });
+    buildupStackHover = stacked;
+    if (stacked) initBuildupHover(canvas);
+    renderHtmlLegend(buildupChart, 'buildupLegend', {});
+}
+
+function updateGasCharts() {
+    if (!DATA.chart_groups) return;
+    updateGasRangeChart();
+    updateGasBuildupChart();
+}
+
 /* === EVENTS === */
 function onPeriodChange() {
     updateRangeSelectors();
@@ -2146,6 +2821,7 @@ function updateAll() {
     updateTable();
     updateGrowthTable();
     if (DATA.charts_enabled) updateCharts();
+    else if (DATA.chart_groups) updateGasCharts();
 }
 
 document.addEventListener('click', function(e) {
@@ -2205,6 +2881,7 @@ document.addEventListener('DOMContentLoaded', function() {
     updateGrowthTypeSelector();
     updatePeriodNote();
     if (DATA.charts_enabled) rebuildChartControls();
+    else if (DATA.chart_groups) rebuildGasChartControls();
     updateAll();
     setupHover('tableBody');
     setupHover('growthBody');
@@ -2212,14 +2889,20 @@ document.addEventListener('DOMContentLoaded', function() {
 """
 
     js = js.replace("__DATA_PLACEHOLDER__", data_json)
+    js = js.replace("__EMBED_TABS__", json.dumps(EMBED_TABS))
 
-    # Build dataset toggle buttons
+    # Build tab toggle buttons: data datasets first, then embed tabs (Storage/LNG).
     toggle_buttons = []
     for k in ordered_keys:
         ds = datasets_by_key[k]
         toggle_buttons.append(
             f'<button class="dataset-toggle-btn{" active" if k == ordered_keys[0] else ""}" '
             f'id="btnDataset-{k}" onclick="switchDataset(\'{k}\')">{ds["tab_label"]}</button>'
+        )
+    for t in EMBED_TABS:
+        toggle_buttons.append(
+            f'<button class="dataset-toggle-btn" '
+            f'id="btnDataset-{t["key"]}" onclick="showEmbedTab(\'{t["key"]}\')">{t["label"]}</button>'
         )
 
     html = '<!DOCTYPE html>\n<html lang="en">\n<head>\n'
@@ -2312,12 +2995,12 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '<div class="grid-quad quad-seasonality chart-quadrant">\n'
     html += '    <div class="chart-controls">\n'
     html += '        <div class="control-group">\n'
-    html += '            <label>Sources</label>\n'
+    html += '            <label id="rangeSourceLabel">Sources</label>\n'
     html += '            <div class="multi-select" id="msSeasonality"></div>\n'
     html += '        </div>\n'
     html += '        <div class="control-group">\n'
-    html += '            <label>Lookback</label>\n'
-    html += '            <select id="seasonalityLookback" onchange="updateSeasonalityChart()"></select>\n'
+    html += '            <label>Average range</label>\n'
+    html += '            <select id="seasonalityLookback" onchange="updateRangeChart()"></select>\n'
     html += '        </div>\n'
     html += '    </div>\n'
     html += '    <div class="chart-title" id="seasonalityTitle">Seasonality</div>\n'
@@ -2327,9 +3010,10 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '    <div class="custom-legend" id="seasonalityLegend"></div>\n'
     html += '</div>\n\n'
 
-    # === Bottom-right: generation buildup chart ===
+    # === Bottom-right: buildup chart. Power uses Sources/Period/From/To;
+    #     gas uses a chart-type toggle + Series picker (range/unit follow the table). ===
     html += '<div class="grid-quad quad-buildup chart-quadrant">\n'
-    html += '    <div class="chart-controls">\n'
+    html += '    <div class="chart-controls buildup-controls-power">\n'
     html += '        <div class="control-group">\n'
     html += '            <label>Sources</label>\n'
     html += '            <div class="multi-select" id="msBuildup"></div>\n'
@@ -2351,6 +3035,20 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '            <select id="buildupTo" onchange="updateBuildupChart()"></select>\n'
     html += '        </div>\n'
     html += '    </div>\n'
+    html += '    <div class="chart-controls buildup-controls-gas">\n'
+    html += '        <div class="control-group">\n'
+    html += '            <label>Chart</label>\n'
+    html += '            <div class="value-toggle">\n'
+    html += '                <button id="btnGasBuild-bar" class="active" onclick="setGasBuildupType(\'bar\')">Stacked Bar</button>\n'
+    html += '                <button id="btnGasBuild-area" onclick="setGasBuildupType(\'area\')">Stacked Area</button>\n'
+    html += '                <button id="btnGasBuild-line" onclick="setGasBuildupType(\'line\')">Line</button>\n'
+    html += '            </div>\n'
+    html += '        </div>\n'
+    html += '        <div class="control-group">\n'
+    html += '            <label>Series</label>\n'
+    html += '            <div class="multi-select" id="msGasBuildup"></div>\n'
+    html += '        </div>\n'
+    html += '    </div>\n'
     html += '    <div class="chart-title" id="buildupTitle">Generation</div>\n'
     html += '    <div class="chart-canvas-wrap">\n'
     html += '        <canvas id="buildupCanvas"></canvas>\n'
@@ -2358,7 +3056,24 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '    <div class="custom-legend" id="buildupLegend"></div>\n'
     html += '</div>\n\n'
 
+    # === Placeholder chart boxes (shown for chart_area datasets without live
+    #     charts yet, e.g. gas). Occupy the same grid areas as the real charts. ===
+    html += '<div class="chart-placeholder-quad left">\n'
+    html += '    <div class="chart-title">Chart 1</div>\n'
+    html += '    <div class="chart-placeholder-box">Chart to be configured</div>\n'
+    html += '</div>\n\n'
+    html += '<div class="chart-placeholder-quad right">\n'
+    html += '    <div class="chart-title">Chart 2</div>\n'
+    html += '    <div class="chart-placeholder-box">Chart to be configured</div>\n'
+    html += '</div>\n\n'
+
     html += '</div>\n\n'  # end main-grid
+
+    # Embed container for external dashboard tabs (Storage / LNG Sendout).
+    # Shown only when an embed tab is active (CSS body.embed-active).
+    html += '<div class="embed-container" id="embedContainer">\n'
+    html += '    <iframe id="embedFrame" title="Palissy external dashboard" loading="lazy"></iframe>\n'
+    html += '</div>\n\n'
 
     html += '<div class="footer">\n'
     html += '    <span>Source: Palissy Advisors</span>\n'
