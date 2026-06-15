@@ -122,7 +122,7 @@ GAS_SERIES_COLORS = {
 DATASETS = [
     {
         "key": "gas",
-        "tab_label": "Gas",
+        "tab_label": "Gas Balance",
         "title": "European Gas Balance",
         "sheet": "Monthly Data",
         "date_row": 1,
