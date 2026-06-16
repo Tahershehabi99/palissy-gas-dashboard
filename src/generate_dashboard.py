@@ -1620,7 +1620,7 @@ body.projects-tab .embed-container { display: none; }
 }
 .prj-outlook-table tr.prj-row-region td,
 .prj-outlook-table tr.prj-row-country td { font-variant-numeric: tabular-nums; }
-.prj-outlook-table tr.prj-row-total td {
+.prj-table tr.prj-row-total td {
     background: #eef0f6; font-weight: bold; border-top: 2px solid """ + db + """;
     position: sticky; bottom: 0;
 }
@@ -1630,6 +1630,17 @@ body.projects-tab .embed-container { display: none; }
 }
 .prj-outlook-charts .grid-quad { min-width: 0; display: flex; flex-direction: column; }
 @media (max-width: 1100px) { .prj-outlook-charts { grid-template-columns: 1fr; } }
+/* Chart header: grey bar carrying a centered title (left chart also has the
+   Average-range dropdown on the left; right chart has just the title). */
+.prj-chart-head { position: relative; min-height: 42px; }
+.prj-chart-head .control-group { position: relative; z-index: 1; }
+.prj-chart-head .chart-title-inline {
+    position: absolute; left: 14px; right: 14px; top: 0; bottom: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: bold; color: """ + db + """;
+    letter-spacing: 0.5px; text-transform: uppercase; text-align: center;
+    pointer-events: none;
+}
 
 /* Change-in-production controls (mirrors the gas growth controls) */
 .prj-change-controls { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; padding: 14px 2px 8px; }
@@ -4234,14 +4245,7 @@ function prjUpdateFilterUI(scope){
     });
 }
 
-function prjRenderSummary(){
-    var f=prjFiltered(), ul=prjUnitLabel();
-    function pill(v,k,acc){ return '<div class="prj-pill'+(acc?' accent':'')+'"><span class="v">'+v+'</span><span class="k">'+k+'</span></div>'; }
-    document.getElementById('prjSummary').innerHTML =
-        pill(f.length, 'Projects', false)
-        + pill(prjNum(prjConvCap(prjSum(f,'unrisked')),1)+' '+ul, 'Unrisked capacity', false)
-        + pill(prjNum(prjConvCap(prjSum(f,'risked')),1)+' '+ul, 'Risked capacity', false);
-}
+function prjRenderSummary(){ /* summary pills removed from the Projects sub-tab per spec */ }
 
 function prjBadge(status){
     var cls=String(status||'').toLowerCase().replace(/[^a-z]+/g,'-').replace(/^-|-$/g,'');
@@ -4319,7 +4323,14 @@ function prjRenderTree(){
             });
         });
     });
-    if(!html) html='<tr><td colspan="7" style="text-align:center;color:#9395A2;padding:20px;">No projects match the current filters.</td></tr>';
+    if(!html){
+        html='<tr><td colspan="7" style="text-align:center;color:#9395A2;padding:20px;">No projects match the current filters.</td></tr>';
+    } else {
+        // Grand total row (always shown): summed unrisked + risked of the filtered set.
+        html+='<tr class="prj-row-total"><td>Grand total ('+f.length+')</td><td></td>'
+            + '<td>'+prjNum(prjConvCap(prjSum(f,'unrisked')),1)+'</td>'
+            + '<td>'+prjNum(prjConvCap(prjSum(f,'risked')),1)+'</td><td></td><td></td><td></td></tr>';
+    }
     document.getElementById('prjTableBody').innerHTML=html;
 }
 
@@ -5042,15 +5053,17 @@ document.addEventListener('DOMContentLoaded', function() {
     # Charts row: range (left) + stacked area (right)
     html += '    <div class="prj-outlook-charts">\n'
     html += '      <div class="grid-quad">\n'
-    html += '        <div class="chart-controls">\n'
+    html += '        <div class="chart-controls prj-chart-head">\n'
     html += '          <div class="control-group"><label>Average range</label><select id="prjRangeLookback" onchange="prjOutlookCharts()"></select></div>\n'
+    html += '          <div class="chart-title-inline" id="prjRangeTitle">Production Range</div>\n'
     html += '        </div>\n'
-    html += '        <div class="chart-title" id="prjRangeTitle">Production Range</div>\n'
     html += '        <div class="chart-canvas-wrap"><canvas id="prjRangeCanvas"></canvas></div>\n'
     html += '        <div class="custom-legend" id="prjRangeLegend"></div>\n'
     html += '      </div>\n'
     html += '      <div class="grid-quad">\n'
-    html += '        <div class="chart-title" id="prjStackTitle">Production Build-up</div>\n'
+    html += '        <div class="chart-controls prj-chart-head">\n'
+    html += '          <div class="chart-title-inline" id="prjStackTitle">Production Build-up</div>\n'
+    html += '        </div>\n'
     html += '        <div class="chart-canvas-wrap"><canvas id="prjStackCanvas"></canvas></div>\n'
     html += '        <div class="custom-legend" id="prjStackLegend"></div>\n'
     html += '      </div>\n'
@@ -5058,7 +5071,6 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '  </div>\n'
     # Projects pane (assumptions)
     html += '  <div class="prj-pane" id="prjPaneProjects">\n'
-    html += '    <div class="prj-summary" id="prjSummary"></div>\n'
     html += '    <div class="prj-table-container">\n'
     html += '      <table class="prj-table"><thead id="prjTableHead"></thead><tbody id="prjTableBody"></tbody></table>\n'
     html += '    </div>\n'
