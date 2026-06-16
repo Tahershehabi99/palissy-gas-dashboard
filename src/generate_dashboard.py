@@ -783,7 +783,8 @@ def build_projects_blob(config):
     companies for the company filter and pairs partners with their stakes."""
     wb = openpyxl.load_workbook(LNG_INPUT_FILE, data_only=True)
     try:
-        production = build_projects_production(wb)
+        latest_actual = detect_latest_actual(LNG_IMPORTS_CFG)
+        production = build_projects_production(wb, latest_actual)
         ws = wb["LNG Projects"]
         projects = []
         for r in range(2, ws.max_row + 1):
@@ -808,12 +809,25 @@ def build_projects_blob(config):
                 owners.append({"name": operator, "stake": primary_stake})
             for i, p in enumerate(partners):
                 owners.append({"name": p, "stake": stakes[i] if i < len(stakes) else None})
+            # Per-company stake map keyed by the SAME names as `companies` (operator
+            # name(s) -> primary stake; each partner -> its S-stake). Used by the
+            # Net (stake-weighted) view: net = gross x sum(selected companies' stakes).
+            # Missing stakes are simply absent (-> contribute 0), by design.
+            co_stakes = {}
+            if primary_stake is not None:
+                for nm in op_names:
+                    co_stakes[nm] = primary_stake
+            for i, p in enumerate(partners):
+                s = stakes[i] if i < len(stakes) else None
+                if s is not None:
+                    co_stakes[p] = s
             projects.append({
                 "name": str(name).strip(), "country": cell(2), "region": cell(3),
                 "status": cell(4) or "", "unrisked": cell(5), "unrisked_bcfd": cell(6),
                 "cos": cell(7), "risked": cell(8), "start": cell(9) or "",
                 "util_forecast": cell(10), "util_decline": cell(11),
                 "operator": operator, "owners": owners, "companies": companies,
+                "co_stakes": co_stakes,
             })
     finally:
         wb.close()
@@ -838,16 +852,21 @@ def build_projects_blob(config):
         "production": production,
         # latest actual month (shared with Global LNG) caps the range chart's
         # current-year line; region colors keep the stacked area consistent.
-        "latest_actual": detect_latest_actual(LNG_IMPORTS_CFG),
+        "latest_actual": latest_actual,
         "region_colors": LNG_EXPORT_COLORS,
         "selectable_start": DISPLAY_START_YEAR, "selectable_end": DISPLAY_END_YEAR,
     }
 
 
-def build_projects_production(wb):
+def build_projects_production(wb, latest_actual=None):
     """Build project-level production period views from the 'LNG Proj Production'
     sheet (row 1 = month dates from col B; col A = project name). Rows are
-    projects; the JS groups them into region/country totals on the fly."""
+    projects; the JS groups them into region/country totals on the fly.
+
+    Each view also carries `netok`: a per-column flag (1/0) marking whether the
+    period bucket reaches into the forecast (its last month is after the latest
+    actual month). The Net view shows values only where netok=1 (fully-historical
+    buckets disappear; the current straddling bucket and all future buckets stay)."""
     ws = wb["LNG Proj Production"]
     dates = []
     last_col = 1
@@ -870,6 +889,17 @@ def build_projects_production(wb):
             vals.append(float(v) if isinstance(v, (int, float)) else 0.0)
         rows.append({"label": str(name).strip(), "values": vals})
 
+    boundary = None
+    if latest_actual:
+        boundary = datetime(latest_actual["year"], latest_actual["month"], 1)
+
+    def col_is_forecast(col):
+        # A bucket reaches the forecast if its LAST month is after the latest actual.
+        if not boundary or not col["indices"]:
+            return 1
+        last = dates[col["indices"][-1]]
+        return 1 if (isinstance(last, datetime) and last > boundary) else 0
+
     period_results = aggregate_monthly_to_periods(dates, days)
     views = {}
     for view_name, period_cols in period_results.items():
@@ -880,6 +910,7 @@ def build_projects_production(wb):
             "col_meta": [{"label": c["label"], "short": c["short"], "year": c.get("year", 0),
                           "month": c.get("month"), "days": c["days"]} for c in period_cols],
             "days": [c["days"] for c in period_cols],
+            "netok": [col_is_forecast(c) for c in period_cols],
             "rows": [{"label": a["label"], "base": a["base_values"]} for a in aggregated],
         }
     print(f"  Production views built: {len(rows)} projects x {len(dates)} months")
@@ -1644,6 +1675,10 @@ body.projects-tab .lng-subtab-bar { display: flex; }
     font-size: 10px; font-weight: bold; text-transform: uppercase;
     color: """ + grey + """; letter-spacing: 0.5px;
 }
+/* Gross/Net basis toggle (Supply Outlook) — appears (left-aligned, right after
+   From/To) when companies are selected. */
+.net-toggle-row { display: flex; align-items: center; gap: 10px; }
+.prj-net-note { font-size: 11px; font-style: italic; color: """ + grey + """; max-width: 240px; line-height: 1.25; }
 .prj-outlook-table tr.prj-row-region td,
 .prj-outlook-table tr.prj-row-country td { font-variant-numeric: tabular-nums; }
 .prj-table tr.prj-row-total td {
@@ -4146,6 +4181,8 @@ var prjExpanded = {};      // assumptions tree: 'r|Region' | 'c|Region|Country' 
 var prjOutExpanded = {};   // supply-outlook tree expand state (shared by production + change)
 var prjSubtab = 'outlook'; // default sub-tab
 var prjChangeMode = 'pct'; // change table: 'pct' | 'abs'
+var prjNetMode = 'gross';  // Supply Outlook value basis: 'gross' | 'net' (stake-weighted)
+var PRJ_BY_NAME = {};      // name -> project (for fast stake lookup)
 var prjRangeChart = null, prjStackChart = null;   // Supply Outlook charts
 var PRJ_DIMS = [['prjFilterStatus','status'],['prjFilterRegion','region'],
                 ['prjFilterCountry','country'],['prjFilterCompany','company'],
@@ -4197,13 +4234,41 @@ function prjAvailableValues(dim,scope){
     return out;
 }
 
+/* ---- Net (stake-weighted) view helpers. Net = gross x sum of the SELECTED
+        companies' stakes in each project; forward-looking only (historical
+        buckets are blanked via each view's netok flag). Missing stakes count as
+        0. The toggle appears only while >=1 company is selected on the table. ---- */
+function prjNetSel(scope){ return prjFilters[scope].company; }
+function prjNetActive(scope){ return prjNetMode==='net' && prjNetSel(scope).length>0; }
+function prjStakeMul(name, scope){
+    if(prjNetMode!=='net') return 1;
+    var sel=prjNetSel(scope); if(!sel.length) return 0;
+    var p=PRJ_BY_NAME[name]; if(!p||!p.co_stakes) return 0;
+    var m=0; for(var i=0;i<sel.length;i++){ var s=p.co_stakes[sel[i]]; if(typeof s==='number'&&!isNaN(s)) m+=s; }
+    return m;
+}
+// Show the Gross/Net toggle only while companies are selected; revert to gross otherwise.
+function prjUpdateNetToggle(){
+    var wrap=document.getElementById('prjNetToggle'); if(!wrap) return;
+    var on=prjFilters.table.company.length>0;
+    wrap.style.display = on ? 'flex' : 'none';
+    if(!on && prjNetMode!=='gross') prjNetMode='gross';
+    var gb=document.getElementById('prjGrossBtn'), nb=document.getElementById('prjNetBtn');
+    if(gb) gb.className = prjNetMode==='gross'?'active':'';
+    if(nb) nb.className = prjNetMode==='net'?'active':'';
+    var note=document.getElementById('prjNetNote');
+    if(note) note.style.display = (on && prjNetMode==='net') ? 'inline' : 'none';
+}
+function prjSetNetMode(m){ prjNetMode=m; prjUpdateNetToggle(); prjOutlookRender(); }
+
 function prjInit(){
     PRJ = DATA;
+    PRJ_BY_NAME = {}; PRJ.projects.forEach(function(p){ PRJ_BY_NAME[p.name]=p; });
     prjFilters = { table:{status:[],region:[],country:[],company:[],project:[]},
                    chart:{status:[],region:[],country:[],company:[],project:[]} };
     prjChartLinked = true;
     prjExpanded = {}; prjOutExpanded = {}; prjSubtab = 'outlook';
-    prjChangeMode = 'pct';
+    prjChangeMode = 'pct'; prjNetMode = 'gross';
     var us = document.getElementById('prjUnit');
     if (us) { us.innerHTML=''; PRJ.units.forEach(function(u){ us.innerHTML += '<option value="'+u+'"'+(u===PRJ.default_unit?' selected':'')+'>'+u+'</option>'; }); }
     if (prjRangeChart) { prjRangeChart.destroy(); prjRangeChart = null; }
@@ -4218,7 +4283,7 @@ function prjInit(){
     prjApplyFilters();
 }
 // table filters changed -> re-render assumptions + production + change + (charts if linked)
-function prjApplyFilters(){ prjUpdateFilterUI('table'); prjRenderSummary(); prjRenderTree(); prjOutlookRender(); }
+function prjApplyFilters(){ prjUpdateFilterUI('table'); prjUpdateNetToggle(); prjRenderSummary(); prjRenderTree(); prjOutlookRender(); }
 // chart filters changed -> re-render only the charts
 function prjChartApply(){ prjUpdateFilterUI('chart'); prjOutlookCharts(); }
 
@@ -4276,7 +4341,15 @@ function prjToggle(scope, dimKey, val){
 }
 function prjResetFilters(scope){
     prjFilters[scope]={status:[],region:[],country:[],company:[],project:[]};
-    if(scope==='table') prjApplyFilters(); else prjChartApply();
+    if(scope==='table'){
+        // Reset returns the whole Supply Outlook to its fresh, page-load state:
+        // regional view, default period/range, Gross basis.
+        prjNetMode='gross';
+        var vb=document.getElementById('prjViewBy'); if(vb) vb.value='region';
+        var pd=document.getElementById('prjPeriod'); if(pd) pd.value='Annual CY';
+        prjOutlookPopulateRange();
+        prjApplyFilters();
+    } else { prjChartApply(); }
 }
 function prjUpdateFilterUI(scope){
     PRJ_DIMS.forEach(function(d){
@@ -4488,14 +4561,19 @@ function prjOutlookRender(){
     var viewBy=document.getElementById('prjViewBy').value, ul=prjUnitLabel();
     var prod={}; view.rows.forEach(function(r){ prod[r.label]=r.base; });
     var leaves=prjFiltered().filter(function(p){ return prod[p.name]; });
+    var net=prjNetActive('table'), netok=view.netok||[];
 
-    var hHtml='<tr><th>Production ('+ul+')<span class="unit-label"> ('+period+')</span></th>';
+    var hHtml='<tr><th>Production'+(net?' — net':'')+' ('+ul+')<span class="unit-label"> ('+period+')</span></th>';
     for(var i=0;i<vis.length;i++) hHtml+='<th>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
     document.getElementById('prjOutlookHead').innerHTML=hHtml+'</tr>';
 
     function cellsFn(names){
         var s='';
-        for(var k=0;k<vis.length;k++){ var ci=vis[k], sum=0; for(var n=0;n<names.length;n++){ var b=prod[names[n]]; if(b) sum+=b[ci]; } s+='<td>'+formatNum(prjConvFlow(sum, view.days[ci]), false)+'</td>'; }
+        for(var k=0;k<vis.length;k++){ var ci=vis[k];
+            if(net && !netok[ci]){ s+='<td></td>'; continue; }   // forward-looking only
+            var sum=0; for(var n=0;n<names.length;n++){ var b=prod[names[n]]; if(b) sum+=b[ci]*prjStakeMul(names[n],'table'); }
+            s+='<td>'+formatNum(prjConvFlow(sum, view.days[ci]), false)+'</td>';
+        }
         return s;
     }
     var body=prjBuildTree(viewBy, leaves, prod, vis, cellsFn);
@@ -4538,10 +4616,16 @@ function prjChangeRender(){
 
     var prevMode=growthMode; growthMode=prjChangeMode;   // computeGrowthCell + formatGrowth read this
     var ncol=view.col_meta.length;
-    function aggBase(names){ var a=new Array(ncol); for(var i=0;i<ncol;i++) a[i]=0; for(var n=0;n<names.length;n++){ var b=prod[names[n]]; if(b) for(var i=0;i<ncol;i++) a[i]+=b[i]; } return a; }
+    var net=prjNetActive('table'), netok=view.netok||[];
+    function aggBase(names){ var a=new Array(ncol); for(var i=0;i<ncol;i++) a[i]=0;
+        for(var n=0;n<names.length;n++){ var b=prod[names[n]]; if(b){ var m=prjStakeMul(names[n],'table'); for(var i=0;i<ncol;i++) a[i]+=b[i]*m; } }
+        if(net){ for(var i=0;i<ncol;i++) if(!netok[i]) a[i]=0; }   // historical buckets disappear in net
+        return a;
+    }
     function cellsFn(names){
         var base=aggBase(names), s='';
         for(var k=0;k<vis.length;k++){
+            if(net && !netok[vis[k]]){ s+='<td></td>'; continue; }
             var gv=computeGrowthCell(base, view.days, view.col_meta, vis[k], period, gt, false);
             if(gv===null){ s+='<td></td>'; continue; }
             var cls=gv>0.0001?'g-pos':(gv<-0.0001?'g-neg':'');
@@ -4608,17 +4692,18 @@ function prjOutlookCharts(){ if(!PRJ||!PRJ.production) return; prjRangeChartRend
 
 function prjRangeChartRender(){
     var unit=prjUnit(), ul=prjUnitLabel(), mv=PRJ.production.views.Monthly;
+    var scope=prjChartScope(), net=prjNetActive(scope), netok=mv.netok||[];
     var prod={}; mv.rows.forEach(function(r){ prod[r.label]=r.base; });
     var leaves=prjChartProjects().filter(function(p){ return prod[p.name]; });
     var n=mv.col_meta.length, tot=new Array(n); for(var i=0;i<n;i++) tot[i]=0;
-    leaves.forEach(function(p){ var b=prod[p.name]; for(var i=0;i<n;i++) tot[i]+=b[i]; });
+    leaves.forEach(function(p){ var b=prod[p.name], m=net?prjStakeMul(p.name,scope):1; for(var i=0;i<n;i++) tot[i]+=b[i]*m; });
     var idxMap={}; for(var i=0;i<mv.col_meta.length;i++) idxMap[mv.col_meta[i].year+'-'+mv.col_meta[i].month]=i;
     var lbEl=document.getElementById('prjRangeLookback'); var lookback=lbEl?(parseInt(lbEl.value)||5):5;
     var cal=isCalCycle(prjChartPeriodVal());
     var cgy=cycleBase(cal), prevGY=cgy-1, nextGY=cgy+1, labels=cycleLabels(cal);
     var latestIdx=PRJ.latest_actual?PRJ.latest_actual.index:1e9;
     function findIdx(y,m){ var k=y+'-'+m; return (k in idxMap)?idxMap[k]:-1; }
-    function valAt(idx){ if(idx==null||idx<0) return null; return applyUnitConversion(tot[idx], unit, mv.days[idx]); }
+    function valAt(idx){ if(idx==null||idx<0) return null; if(net && !netok[idx]) return null; return applyUnitConversion(tot[idx], unit, mv.days[idx]); }
     // Show the FULL current cycle, including the forecast tail — production is a
     // reported+forecast series, so no actual-only cap here.
     function gyVals(gy){ var out=[]; for(var i=0;i<12;i++){ var a=cycleToActual(cal,gy,i); out.push(valAt(findIdx(a.year,a.month))); } return out; }
@@ -4648,6 +4733,7 @@ function prjStackChartRender(){
     var period=prjChartPeriodVal(), view=PRJ.production.views[period]; if(!view) return;
     var vis=prjVisIndices(view, prjChartFromEl(), prjChartToEl());
     var viewBy=prjChartViewBy(), unit=prjUnit(), ul=prjUnitLabel();
+    var scope=prjChartScope(), net=prjNetActive(scope), netok=view.netok||[];
     var prod={}; view.rows.forEach(function(r){ prod[r.label]=r.base; });
     var leaves=prjChartProjects().filter(function(p){ return prod[p.name]; });
     var groups=[];
@@ -4658,7 +4744,10 @@ function prjStackChartRender(){
     var datasets=[];
     for(var g=0;g<groups.length;g++){
         var grp=groups[g], data=[];
-        for(var k=0;k<vis.length;k++){ var ci=vis[k], s=0; for(var nn=0;nn<grp.names.length;nn++){ var b=prod[grp.names[nn]]; if(b) s+=b[ci]; } var v=applyUnitConversion(s,unit,view.days[ci]); data.push(v<0?0:v); }
+        for(var k=0;k<vis.length;k++){ var ci=vis[k];
+            if(net && !netok[ci]){ data.push(0); continue; }   // forward-looking only
+            var s=0; for(var nn=0;nn<grp.names.length;nn++){ var b=prod[grp.names[nn]]; if(b) s+=b[ci]*(net?prjStakeMul(grp.names[nn],scope):1); }
+            var v=applyUnitConversion(s,unit,view.days[ci]); data.push(v<0?0:v); }
         var color = (viewBy==='region') ? (PRJ.region_colors[grp.label]||PRJ_OWNER_COLORS[g%PRJ_OWNER_COLORS.length]) : PRJ_OWNER_COLORS[g%PRJ_OWNER_COLORS.length];
         datasets.push({ label:grp.label, data:data, backgroundColor:fadeColor(color,0.8), borderColor:color, borderWidth:1, fill:(g===0)?'origin':'-1', stack:'prj', tension:0.2, pointRadius:0 });
     }
@@ -5086,6 +5175,17 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '      </div>\n'
     html += '      <div class="control-group"><label>From</label><select id="prjFrom" onchange="prjOutlookRender()"></select></div>\n'
     html += '      <div class="control-group"><label>To</label><select id="prjTo" onchange="prjOutlookRender()"></select></div>\n'
+    # Gross/Net (stake-weighted) toggle — shown only while >=1 company is selected.
+    html += '      <div class="control-group prj-net-group" id="prjNetToggle" style="display:none;">\n'
+    html += '        <label>Basis</label>\n'
+    html += '        <div class="net-toggle-row">\n'
+    html += '          <div class="growth-toggle">\n'
+    html += '            <button id="prjGrossBtn" class="active" onclick="prjSetNetMode(\'gross\')">Gross</button>\n'
+    html += '            <button id="prjNetBtn" onclick="prjSetNetMode(\'net\')">Net</button>\n'
+    html += '          </div>\n'
+    html += '          <span class="prj-net-note" id="prjNetNote" style="display:none;">Net is forward-looking only — gross &times; selected companies&rsquo; stake.</span>\n'
+    html += '        </div>\n'
+    html += '      </div>\n'
     html += '    </div>\n'
     html += '    <div class="prj-table-container">\n'
     html += '      <table class="prj-table prj-outlook-table"><thead id="prjOutlookHead"></thead><tbody id="prjOutlookBody"></tbody></table>\n'
