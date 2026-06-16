@@ -180,8 +180,10 @@ LNG_IMPORTS_CFG = {
     "sheet": "Monthly Imports",
     "date_row": 4,
     "days_row": None,                    # no days row -> derive from month dates
-    "data_start_row": 7,                 # EU+UK (row 5 'Regional', row 6 'MMT' are headers)
-    "data_end_row": 20,                  # ... Total
+    # Master Monthly Imports rows (faithfully copied): 5 'Regional', 6 'MMT',
+    # 7 'EU+UK (potential)' (excluded per user), 8 'EU+UK' .. 20 Unaccounted, 21 Total.
+    "data_start_row": 8,                 # start at EU+UK (skips the 'EU+UK (potential)' row)
+    "data_end_row": 21,                  # ... Total
     "data_start_col": 3,                 # data begins at column C
     "base_unit": "mmt",
     "units": LNG_UNITS,
@@ -1623,6 +1625,10 @@ body.projects-tab .embed-container { display: none; }
 .prj-table tr.prj-row-total td {
     background: #eef0f6; font-weight: bold; border-top: 2px solid """ + db + """;
     position: sticky; bottom: 0;
+}
+.prj-table tr.prj-note td {
+    background: #ffffff; color: """ + grey + """; font-style: italic;
+    font-size: 10.5px; text-align: left; padding: 8px 12px; border-bottom: none;
 }
 /* Supply Outlook charts row (range left, stacked area right) */
 .prj-outlook-charts {
@@ -3733,7 +3739,9 @@ function lngUpdateRange(subKey) {
         }
         return out;
     }
-    var prevVals = gyValues(prevGY, false), currVals = gyValues(cgy, true), nextVals = gyValues(nextGY, false);
+    // Show the full current cycle incl. forecast tail (data runs to 2040), so the
+    // current line doesn't stop at the latest actual month.
+    var prevVals = gyValues(prevGY, false), currVals = gyValues(cgy, false), nextVals = gyValues(nextGY, false);
 
     var lbStart = cgy-lookback, lbEnd = cgy-1, avg=[], mn=[], mx=[];
     for (var mo=0;mo<12;mo++) {
@@ -4121,6 +4129,8 @@ function prjStart(s){
 // Owner colors: operator gets Palissy dark blue; partners cycle a palette.
 var PRJ_OWNER_COLORS = ['#272962','#539648','#C00000','#258EEB','#E5B83A','#0C5B19','#8E44AD','#92591C','#2A9D8F','#708B5A'];
 function prjSum(arr,key){ var s=0; for(var i=0;i<arr.length;i++){ var v=arr[i][key]; if(typeof v==='number'&&!isNaN(v)) s+=v; } return s; }
+// Totals exclude shut-down projects (their capacity isn't part of the outlook).
+function prjSumActive(arr,key){ var s=0; for(var i=0;i<arr.length;i++){ var p=arr[i]; if(p.status==='Shut-down') continue; var v=p[key]; if(typeof v==='number'&&!isNaN(v)) s+=v; } return s; }
 function prjFieldVal(p,dim){ return dim==='project'?p.name : dim==='status'?p.status : dim==='region'?p.region : dim==='country'?p.country : null; }
 function prjCap(s){ return s.charAt(0).toUpperCase()+s.slice(1); }
 function prjContainerId(scope,dim){ return (scope==='chart'?'prjcFilter':'prjFilter')+prjCap(dim); }
@@ -4258,10 +4268,11 @@ function prjRowAgg(cls, key, indent, label, n, unr, rk, exp){
         + '<td></td><td>'+prjNum(prjConvCap(unr),1)+'</td><td>'+prjNum(prjConvCap(rk),1)+'</td><td></td><td></td><td></td></tr>';
 }
 function prjRowProject(p, exp){
+    var star = (p.status==='Shut-down') ? '*' : '';   // excluded from totals
     return '<tr class="prj-row-project" data-prj-x="p|'+prjEsc(p.name)+'">'
         + '<td><span class="prj-arrow'+(exp?' expanded':'')+'">&#9654;</span> '+prjEsc(p.name)+'</td>'
         + '<td style="text-align:left;">'+prjBadge(p.status)+'</td>'
-        + '<td>'+prjNum(prjConvCap(p.unrisked),1)+'</td><td>'+prjNum(prjConvCap(p.risked),1)+'</td>'
+        + '<td>'+prjNum(prjConvCap(p.unrisked),1)+star+'</td><td>'+prjNum(prjConvCap(p.risked),1)+star+'</td>'
         + '<td>'+prjPct(p.cos)+'</td><td>'+prjStart(p.start)+'</td>'
         + '<td>'+prjEsc(p.operator||'—')+'</td></tr>';
 }
@@ -4309,12 +4320,12 @@ function prjRenderTree(){
     PRJ.region_order.forEach(function(region){
         var rp=byRegion[region]; if(!rp||!rp.length) return;
         var rExp=!!prjExpanded['r|'+region];
-        html+=prjRowAgg('prj-row-region','r|'+region,0,region,rp.length,prjSum(rp,'unrisked'),prjSum(rp,'risked'),rExp);
+        html+=prjRowAgg('prj-row-region','r|'+region,0,region,rp.length,prjSumActive(rp,'unrisked'),prjSumActive(rp,'risked'),rExp);
         if(!rExp) return;
         var byC={}; rp.forEach(function(p){ (byC[p.country]=byC[p.country]||[]).push(p); });
-        Object.keys(byC).sort(function(a,b){ return prjSum(byC[b],'risked')-prjSum(byC[a],'risked'); }).forEach(function(country){
+        Object.keys(byC).sort(function(a,b){ return prjSumActive(byC[b],'risked')-prjSumActive(byC[a],'risked'); }).forEach(function(country){
             var cp=byC[country]; var ckey='c|'+region+'|'+country; var cExp=!!prjExpanded[ckey];
-            html+=prjRowAgg('prj-row-country',ckey,1,country,cp.length,prjSum(cp,'unrisked'),prjSum(cp,'risked'),cExp);
+            html+=prjRowAgg('prj-row-country',ckey,1,country,cp.length,prjSumActive(cp,'unrisked'),prjSumActive(cp,'risked'),cExp);
             if(!cExp) return;
             cp.slice().sort(function(a,b){ return (b.risked||0)-(a.risked||0); }).forEach(function(p){
                 var pExp=!!prjExpanded['p|'+p.name];
@@ -4326,10 +4337,13 @@ function prjRenderTree(){
     if(!html){
         html='<tr><td colspan="7" style="text-align:center;color:#9395A2;padding:20px;">No projects match the current filters.</td></tr>';
     } else {
-        // Grand total row (always shown): summed unrisked + risked of the filtered set.
+        // Grand total row (always shown): unrisked + risked of the filtered set,
+        // EXCLUDING shut-down projects.
         html+='<tr class="prj-row-total"><td>Grand total ('+f.length+')</td><td></td>'
-            + '<td>'+prjNum(prjConvCap(prjSum(f,'unrisked')),1)+'</td>'
-            + '<td>'+prjNum(prjConvCap(prjSum(f,'risked')),1)+'</td><td></td><td></td><td></td></tr>';
+            + '<td>'+prjNum(prjConvCap(prjSumActive(f,'unrisked')),1)+'</td>'
+            + '<td>'+prjNum(prjConvCap(prjSumActive(f,'risked')),1)+'</td><td></td><td></td><td></td></tr>';
+        if(f.some(function(p){ return p.status==='Shut-down'; }))
+            html+='<tr class="prj-note"><td colspan="7">* Shut-down projects are not included in totals.</td></tr>';
     }
     document.getElementById('prjTableBody').innerHTML=html;
 }
