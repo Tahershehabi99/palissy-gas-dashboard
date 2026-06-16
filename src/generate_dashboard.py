@@ -348,10 +348,16 @@ DATASETS = [
         # sub-tabs (Projects assumptions view + Supply Outlook time-series), a
         # progressive filter bar, and a Region->Country->Project tree. Reads the
         # 'LNG Projects' sheet built by extract_lng_input.py (mains only).
+        # No longer a top-level tab: it lives UNDER Global LNG as two of its three
+        # sub-tabs (Supply Outlook + Projects). `parent_tab` groups it with the
+        # composite under the single "Global LNG" tab button; `hidden_tab` keeps
+        # it out of the main tab bar (reached via the lng-subtab bar instead).
         "key": "lng_projects",
         "tab_label": "LNG Projects",
-        "title": "Global LNG Projects",
+        "title": "Global LNG",
         "projects_tab": True,
+        "parent_tab": "global_lng",
+        "hidden_tab": True,
         "input_file": "lng",
     },
 ]
@@ -821,6 +827,7 @@ def build_projects_blob(config):
     return {
         "key": config["key"], "tab_label": config["tab_label"], "title": config["title"],
         "projects_tab": True,
+        "parent_tab": config.get("parent_tab"),
         "projects": projects,
         "region_order": region_order, "status_order": status_order,
         "countries": countries, "companies": companies,
@@ -1546,6 +1553,23 @@ body.projects-tab .main-grid,
 body.projects-tab .lng-grid,
 body.projects-tab .embed-container { display: none; }
 
+/* Global LNG sub-tab bar (Overview / Supply Outlook / Projects). Sits under the
+   main tab bar; shown only on the Global LNG group. */
+.lng-subtab-bar { display: none; justify-content: center; gap: 0; margin: 4px 20px 14px; }
+body.lng-composite .lng-subtab-bar,
+body.projects-tab .lng-subtab-bar { display: flex; }
+.lng-subtab-btn {
+    font-family: 'Gotham Book','Segoe UI',Calibri,sans-serif;
+    font-size: 12.5px; font-weight: bold; padding: 7px 26px;
+    border: 1.5px solid """ + db + """; border-right: none;
+    background: #fff; color: """ + db + """;
+    cursor: pointer; transition: all 0.15s;
+}
+.lng-subtab-btn:first-child { border-radius: 7px 0 0 7px; }
+.lng-subtab-btn:last-child  { border-radius: 0 7px 7px 0; border-right: 1.5px solid """ + db + """; }
+.lng-subtab-btn.active { background: """ + db + """; color: #fff; }
+.lng-subtab-btn:hover:not(.active) { background: """ + card + """; }
+
 /* sub-tab switcher (Projects / Supply Outlook) */
 .prj-subtabs { display: flex; justify-content: center; gap: 0; margin: 0 0 12px; }
 .prj-subtab-btn {
@@ -2122,7 +2146,8 @@ function updateDatasetUI() {
     if (DATA.has_range) bodyCls += ' has-range';
     if (DATA.has_buildup) bodyCls += ' has-buildup';
     document.body.className = bodyCls;
-    setActiveTabButton(currentKey);
+    // A hidden sub-tab dataset (e.g. lng_projects) keeps its PARENT tab button lit.
+    setActiveTabButton(DATA.parent_tab || currentKey);
 }
 
 function switchDataset(key) {
@@ -2153,6 +2178,26 @@ function switchDataset(key) {
         updateAll();
     } else {
         updateAll();
+    }
+}
+
+/* Global LNG sub-tab controller: Overview (composite) | Supply Outlook | Projects.
+   Overview is the `global_lng` composite dataset; Supply Outlook + Projects are the
+   two internal panes of the hidden `lng_projects` dataset. switchDataset() re-lights
+   the shared "Global LNG" tab button via updateDatasetUI (parent_tab). */
+var lngSubtab = 'overview';
+function lngSetSubtab(which) {
+    lngSubtab = which;
+    if (which === 'overview') {
+        if (currentKey !== 'global_lng' || embedActive) switchDataset('global_lng');
+    } else {
+        if (currentKey !== 'lng_projects' || embedActive) switchDataset('lng_projects');
+        prjSetSubtab(which === 'projects' ? 'projects' : 'outlook');
+    }
+    var btns = { overview: 'lngSubOverview', outlook: 'lngSubOutlook', projects: 'lngSubProjects' };
+    for (var k in btns) {
+        var b = document.getElementById(btns[k]);
+        if (b) b.classList.toggle('active', k === which);
     }
 }
 
@@ -4350,8 +4395,7 @@ function prjRenderTree(){
 
 function prjSetSubtab(t){
     prjSubtab=t;
-    document.getElementById('prjSubtabProjects').classList.toggle('active', t==='projects');
-    document.getElementById('prjSubtabOutlook').classList.toggle('active', t==='outlook');
+    // Sub-tab buttons now live in the shared lng-subtab bar; here we just swap panes.
     document.getElementById('prjPaneProjects').classList.toggle('active', t==='projects');
     document.getElementById('prjPaneOutlook').classList.toggle('active', t==='outlook');
 }
@@ -4726,12 +4770,19 @@ document.addEventListener('DOMContentLoaded', function() {
     js = js.replace("__EMBED_TABS__", json.dumps(EMBED_TABS))
 
     # Build tab toggle buttons: data datasets first, then embed tabs (Storage/LNG).
+    # `hidden_tab` datasets (e.g. lng_projects) get no top-level button — they're
+    # reached as sub-tabs under their parent (Global LNG) via the lng-subtab bar.
+    cfg_by_key = {c["key"]: c for c in DATASETS}
     toggle_buttons = []
     for k in ordered_keys:
+        if cfg_by_key.get(k, {}).get("hidden_tab"):
+            continue
         ds = datasets_by_key[k]
+        # Global LNG enters through its sub-tab controller (defaults to Overview).
+        onclick = "lngSetSubtab('overview')" if k == "global_lng" else f"switchDataset('{k}')"
         toggle_buttons.append(
             f'<button class="dataset-toggle-btn{" active" if k == ordered_keys[0] else ""}" '
-            f'id="btnDataset-{k}" onclick="switchDataset(\'{k}\')">{ds["tab_label"]}</button>'
+            f'id="btnDataset-{k}" onclick="{onclick}">{ds["tab_label"]}</button>'
         )
     for t in EMBED_TABS:
         toggle_buttons.append(
@@ -4755,6 +4806,14 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '<div class="dataset-toggle-bar">\n    '
     html += '\n    '.join(toggle_buttons)
     html += '\n</div>\n\n'
+
+    # Global LNG sub-tab bar: Overview (composite) | Supply Outlook | Projects.
+    # Visible only on the Global LNG group (body.lng-composite or body.projects-tab).
+    html += '<div class="lng-subtab-bar" id="lngSubtabBar">\n'
+    html += '    <button class="lng-subtab-btn active" id="lngSubOverview" onclick="lngSetSubtab(\'overview\')">Overview</button>\n'
+    html += '    <button class="lng-subtab-btn" id="lngSubOutlook" onclick="lngSetSubtab(\'outlook\')">Supply Outlook</button>\n'
+    html += '    <button class="lng-subtab-btn" id="lngSubProjects" onclick="lngSetSubtab(\'projects\')">Projects</button>\n'
+    html += '</div>\n\n'
 
     html += '<div class="controls">\n'
     html += '    <div class="control-group">\n'
@@ -4996,10 +5055,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     # === LNG Projects tab: sub-tabs + filter bar + Region/Country/Project tree ===
     html += '<div class="projects-tab-wrap" id="projectsTab">\n'
-    html += '  <div class="prj-subtabs">\n'
-    html += '    <button class="prj-subtab-btn active" id="prjSubtabOutlook" onclick="prjSetSubtab(\'outlook\')">Supply Outlook</button>\n'
-    html += '    <button class="prj-subtab-btn" id="prjSubtabProjects" onclick="prjSetSubtab(\'projects\')">Projects</button>\n'
-    html += '  </div>\n'
+    # (Sub-tab switching is handled by the shared lng-subtab bar above.)
     html += '  <div class="prj-filter-bar">\n'
     html += '    <div class="prj-filter-group"><label>Unit</label><select id="prjUnit" onchange="prjOnUnitChange()"></select></div>\n'
     for lbl, fid in [("Status", "prjFilterStatus"), ("Region", "prjFilterRegion"),
