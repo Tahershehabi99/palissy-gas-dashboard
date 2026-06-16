@@ -341,6 +341,17 @@ DATASETS = [
         "default_unit": "mmt",
         "unit_config": LNG_UNIT_CONFIG,
     },
+    {
+        # LNG Projects: a project database (NOT the table/charts engine). Its own
+        # sub-tabs (Projects assumptions view + Supply Outlook time-series), a
+        # progressive filter bar, and a Region->Country->Project tree. Reads the
+        # 'LNG Projects' sheet built by extract_lng_input.py (mains only).
+        "key": "lng_projects",
+        "tab_label": "LNG Projects",
+        "title": "Global LNG Projects",
+        "projects_tab": True,
+        "input_file": "lng",
+    },
 ]
 
 # ============================================================
@@ -756,6 +767,114 @@ def build_dataset_blob(config):
         "range_kind": config.get("range_kind"),
         "chart_series": config.get("chart_series"),
     }
+
+
+def build_projects_blob(config):
+    """Build the LNG Projects blob from the clean 'LNG Projects' sheet (mains only,
+    already joined to Assumptions by extract_lng_input.py). Parses owner/partner
+    companies for the company filter and pairs partners with their stakes."""
+    wb = openpyxl.load_workbook(LNG_INPUT_FILE, data_only=True)
+    try:
+        production = build_projects_production(wb)
+        ws = wb["LNG Projects"]
+        projects = []
+        for r in range(2, ws.max_row + 1):
+            name = ws.cell(r, 1).value
+            if not name:
+                continue
+            cell = lambda c: ws.cell(r, c).value
+            operator = (cell(12) or "").strip()
+            partners_str = (cell(13) or "").strip()
+            primary_stake = cell(14)
+            stakes = [cell(c) for c in range(15, 22)]  # S1..S7
+            partners = [p.strip() for p in partners_str.split(",") if p.strip()] if partners_str else []
+            # Companies for the filter = operator name(s) (split on "/") + partners.
+            op_names = [o.strip() for o in operator.split("/") if o.strip()] if operator else []
+            companies = []
+            for c in op_names + partners:
+                if c not in companies:
+                    companies.append(c)
+            # Owner/stake rows for the project-detail panel.
+            owners = []
+            if operator:
+                owners.append({"name": operator, "stake": primary_stake})
+            for i, p in enumerate(partners):
+                owners.append({"name": p, "stake": stakes[i] if i < len(stakes) else None})
+            projects.append({
+                "name": str(name).strip(), "country": cell(2), "region": cell(3),
+                "status": cell(4) or "", "unrisked": cell(5), "unrisked_bcfd": cell(6),
+                "cos": cell(7), "risked": cell(8), "start": cell(9) or "",
+                "util_forecast": cell(10), "util_decline": cell(11),
+                "operator": operator, "owners": owners, "companies": companies,
+            })
+    finally:
+        wb.close()
+
+    region_order = ["Asia", "Australia", "LatAm", "MENA and Europe",
+                    "North America", "Russia", "Sub-Saharan Africa"]
+    status_order = ["Producing", "Under construction", "Pre-FID", "Shut-down"]
+    countries = sorted(set(p["country"] for p in projects if p["country"]))
+    companies = sorted(set(c for p in projects for c in p["companies"]))
+    print(f"  Projects blob: {len(projects)} mains, {len(countries)} countries, {len(companies)} companies")
+    return {
+        "key": config["key"], "tab_label": config["tab_label"], "title": config["title"],
+        "projects_tab": True,
+        "projects": projects,
+        "region_order": region_order, "status_order": status_order,
+        "countries": countries, "companies": companies,
+        # Units for capacity (Projects) + production (Supply Outlook). Base = mmt.
+        "base_unit": "mmt", "units": LNG_UNITS, "default_unit": "mmt",
+        "unit_config": LNG_UNIT_CONFIG,
+        # Project-level production period views (rows = projects; JS groups them).
+        "production": production,
+        # latest actual month (shared with Global LNG) caps the range chart's
+        # current-year line; region colors keep the stacked area consistent.
+        "latest_actual": detect_latest_actual(LNG_IMPORTS_CFG),
+        "region_colors": LNG_EXPORT_COLORS,
+        "selectable_start": DISPLAY_START_YEAR, "selectable_end": DISPLAY_END_YEAR,
+    }
+
+
+def build_projects_production(wb):
+    """Build project-level production period views from the 'LNG Proj Production'
+    sheet (row 1 = month dates from col B; col A = project name). Rows are
+    projects; the JS groups them into region/country totals on the fly."""
+    ws = wb["LNG Proj Production"]
+    dates = []
+    last_col = 1
+    for c in range(2, ws.max_column + 1):
+        v = ws.cell(row=1, column=c).value
+        if isinstance(v, datetime):
+            dates.append(v); last_col = c
+        elif v is not None:
+            dates.append(v); last_col = c
+    days = [monthrange(d.year, d.month)[1] if isinstance(d, datetime) else 30 for d in dates]
+
+    rows = []
+    for r in range(2, ws.max_row + 1):
+        name = ws.cell(row=r, column=1).value
+        if not name:
+            continue
+        vals = []
+        for c in range(2, last_col + 1):
+            v = ws.cell(row=r, column=c).value
+            vals.append(float(v) if isinstance(v, (int, float)) else 0.0)
+        rows.append({"label": str(name).strip(), "values": vals})
+
+    period_results = aggregate_monthly_to_periods(dates, days)
+    views = {}
+    for view_name, period_cols in period_results.items():
+        aggregated = compute_period_values(rows, period_cols, [], [])   # production = pure flow (sum)
+        views[view_name] = {
+            "columns": [c["label"] for c in period_cols],
+            "short_columns": [c["short"] for c in period_cols],
+            "col_meta": [{"label": c["label"], "short": c["short"], "year": c.get("year", 0),
+                          "month": c.get("month"), "days": c["days"]} for c in period_cols],
+            "days": [c["days"] for c in period_cols],
+            "rows": [{"label": a["label"], "base": a["base_values"]} for a in aggregated],
+        }
+    print(f"  Production views built: {len(rows)} projects x {len(dates)} months")
+    return {"views": views}
 
 
 def detect_latest_actual(config):
@@ -1411,6 +1530,218 @@ body.lng-composite .main-grid { display: none; }
 }
 .ms-exp-arrow.expanded { transform: rotate(90deg); }
 .ms-item.ms-exp-member { padding-left: 30px; }
+
+/* ============================================================
+   LNG Projects tab: sub-tabs + filter bar + Region/Country/Project tree.
+   Shown only when body.projects-tab; hides the period/unit bar and the
+   table/chart grids used by the other tabs.
+   ============================================================ */
+.projects-tab-wrap { display: none; margin: 0 20px 12px; }
+body.projects-tab .projects-tab-wrap { display: block; }
+body.projects-tab .controls,
+body.projects-tab .period-note,
+body.projects-tab .main-grid,
+body.projects-tab .lng-grid,
+body.projects-tab .embed-container { display: none; }
+
+/* sub-tab switcher (Projects / Supply Outlook) */
+.prj-subtabs { display: flex; justify-content: center; gap: 0; margin: 0 0 12px; }
+.prj-subtab-btn {
+    font-family: 'Gotham Book','Segoe UI',Calibri,sans-serif;
+    font-size: 12.5px; font-weight: bold; padding: 8px 24px;
+    border: 1.5px solid """ + db + """; background: #fff; color: """ + db + """;
+    cursor: pointer; transition: all 0.15s;
+}
+.prj-subtab-btn:first-child { border-radius: 7px 0 0 7px; border-right: none; }
+.prj-subtab-btn:last-child  { border-radius: 0 7px 7px 0; }
+.prj-subtab-btn.active { background: """ + db + """; color: #fff; }
+.prj-subtab-btn:hover:not(.active) { background: """ + card + """; }
+
+.prj-pane { display: none; }
+.prj-pane.active { display: block; }
+
+/* filter bar */
+.prj-filter-bar {
+    display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px;
+    padding: 12px 16px; background: """ + card + """;
+    border: 1px solid """ + border + """; border-radius: 12px; margin-bottom: 12px;
+}
+.prj-filter-group { display: flex; flex-direction: column; gap: 4px; }
+.prj-filter-group label {
+    font-size: 10px; font-weight: bold; text-transform: uppercase;
+    color: """ + grey + """; letter-spacing: 0.5px;
+}
+.prj-filter-reset {
+    font-family: 'Gotham Book','Segoe UI',Calibri,sans-serif;
+    font-size: 11px; padding: 7px 16px; border-radius: 8px;
+    border: 1.5px solid rgba(39,41,98,0.25); background: #fff; color: """ + db + """;
+    cursor: pointer; transition: all 0.15s; align-self: flex-end;
+}
+.prj-filter-reset:hover { background: #fff; border-color: """ + db + """; }
+.ms-search {
+    width: calc(100% - 12px); margin: 2px 6px 6px; padding: 5px 8px;
+    border: 1px solid rgba(39,41,98,0.25); border-radius: 6px;
+    font-family: inherit; font-size: 12px; color: """ + db + """;
+}
+.ms-item.ms-unavail { display: none; }
+
+/* summary as rounded pill cards */
+.prj-summary { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 14px; }
+.prj-pill {
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 11px 26px; border-radius: 999px;
+    background: #fff; border: 1.5px solid """ + border + """;
+    box-shadow: 0 1px 4px rgba(39,41,98,0.07);
+}
+.prj-pill .v { font-size: 19px; font-weight: bold; color: """ + db + """; font-variant-numeric: tabular-nums; }
+.prj-pill .k { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: """ + grey + """; }
+.prj-pill { transition: background 0.15s, border-color 0.15s; }
+.prj-pill:hover { background: """ + db + """; border-color: """ + db + """; }
+.prj-pill:hover .v { color: #fff; }
+.prj-pill:hover .k { color: rgba(255,255,255,0.7); }
+
+/* unit dropdown in the filter bar + Supply Outlook control row */
+.prj-filter-group select, .prj-outlook-controls select {
+    font-family: 'Gotham Book','Segoe UI',Calibri,sans-serif; font-size: 12px;
+    padding: 7px 30px 7px 12px; border: 1.5px solid rgba(39,41,98,0.25); border-radius: 8px;
+    color: """ + db + """; background: #fff; cursor: pointer; appearance: none; -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23272962'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center;
+}
+.prj-outlook-controls {
+    display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px;
+    padding: 12px 16px; margin-bottom: 12px;
+    background: """ + card + """; border: 1px solid """ + border + """; border-radius: 12px;
+}
+.prj-outlook-controls .control-group { display: flex; flex-direction: column; gap: 4px; }
+.prj-outlook-controls .control-group label {
+    font-size: 10px; font-weight: bold; text-transform: uppercase;
+    color: """ + grey + """; letter-spacing: 0.5px;
+}
+.prj-outlook-table tr.prj-row-region td,
+.prj-outlook-table tr.prj-row-country td { font-variant-numeric: tabular-nums; }
+.prj-outlook-table tr.prj-row-total td {
+    background: #eef0f6; font-weight: bold; border-top: 2px solid """ + db + """;
+    position: sticky; bottom: 0;
+}
+/* Supply Outlook charts row (range left, stacked area right) */
+.prj-outlook-charts {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 14px;
+}
+.prj-outlook-charts .grid-quad { min-width: 0; display: flex; flex-direction: column; }
+@media (max-width: 1100px) { .prj-outlook-charts { grid-template-columns: 1fr; } }
+
+/* Change-in-production controls (mirrors the gas growth controls) */
+.prj-change-controls { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; padding: 14px 2px 8px; }
+.prj-change-controls .control-group { display: flex; flex-direction: column; gap: 4px; }
+.prj-change-controls .control-group label { font-size: 10px; font-weight: bold; text-transform: uppercase; color: """ + grey + """; letter-spacing: 0.5px; }
+.prj-change-controls select, .prj-chart-filter-controls select {
+    font-family: 'Gotham Book','Segoe UI',Calibri,sans-serif; font-size: 12px;
+    padding: 7px 30px 7px 12px; border: 1.5px solid rgba(39,41,98,0.25); border-radius: 8px;
+    color: """ + db + """; background: #fff; cursor: pointer; appearance: none; -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23272962'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center;
+}
+
+/* Chart filters: link-to-table toggle + (when unlinked) an independent filter set */
+.prj-chart-filters { margin-top: 16px; border-top: 1px solid """ + border + """; padding-top: 14px; }
+.prj-chart-filters-head { display: flex; align-items: center; gap: 14px; margin-bottom: 10px; }
+.prj-link-btn {
+    font-family: 'Gotham Book','Segoe UI',Calibri,sans-serif; font-size: 11px; font-weight: bold;
+    padding: 7px 16px; border-radius: 999px; border: 1.5px solid """ + db + """;
+    background: #fff; color: """ + db + """; cursor: pointer; transition: all 0.15s;
+}
+.prj-link-btn.active { background: """ + db + """; color: #fff; }
+.prj-chart-filter-controls {
+    display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px;
+    padding: 12px 16px; background: """ + card + """; border: 1px solid """ + border + """; border-radius: 12px;
+}
+
+/* projects tree table */
+.prj-table-container {
+    border: 1px solid """ + border + """; border-radius: 10px; overflow: auto;
+    max-height: calc(100vh - 360px);
+    box-shadow: 0 1px 4px rgba(39,41,98,0.06);
+}
+/* table-layout:fixed -> column widths come from the header only, so expanding
+   rows or switching periods never shifts the columns. */
+.prj-table { border-collapse: collapse; width: 100%; min-width: 760px; table-layout: fixed; }
+.prj-table thead th {
+    position: sticky; top: 0; z-index: 10; background: """ + db + """; color: #fff;
+    font-size: 11px; font-weight: normal; padding: 9px 12px; text-align: center; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+}
+.prj-table thead th:first-child { text-align: left; }
+.prj-table td {
+    padding: 6px 12px; text-align: center; font-size: 12px; white-space: nowrap;
+    border-bottom: 1px solid """ + grid + """; font-variant-numeric: tabular-nums;
+    overflow: hidden; text-overflow: ellipsis;
+}
+.prj-table td:first-child { text-align: left; }
+/* Projects assumptions table: fixed column widths (7 cols). */
+#prjTableHead th:nth-child(1) { width: 24%; }
+#prjTableHead th:nth-child(2) { width: 14%; }
+#prjTableHead th:nth-child(3), #prjTableHead th:nth-child(4) { width: 12%; }
+#prjTableHead th:nth-child(5) { width: 8%; }
+#prjTableHead th:nth-child(6) { width: 12%; }
+#prjTableHead th:nth-child(7) { width: 18%; }
+/* Supply Outlook table: fixed first column, uniform value columns, scrolls wide. */
+.prj-outlook-table { width: auto; min-width: 100%; }
+.prj-outlook-table th, .prj-outlook-table td { width: 68px; }
+.prj-outlook-table th:first-child, .prj-outlook-table td:first-child { width: 240px; }
+.prj-row-region td { background: #eef0f6; font-weight: bold; cursor: pointer; }
+.prj-row-country td { background: #f6f7fb; font-weight: bold; cursor: pointer; }
+.prj-row-country td:first-child { padding-left: 28px; }
+.prj-row-project td:first-child { padding-left: 48px; cursor: pointer; }
+.prj-row-project:hover td { background: #fafbff; }
+.prj-arrow { display: inline-block; width: 14px; font-size: 10px; color: """ + grey + """; transition: transform 0.15s; }
+.prj-arrow.expanded { transform: rotate(90deg); }
+.prj-detail td { background: #fbfbfe; padding: 0; border-bottom: 2px solid """ + border + """; }
+.prj-detail-inner { padding: 16px 20px 18px 48px; display: flex; flex-wrap: wrap; gap: 14px 40px; align-items: flex-start; }
+.prj-detail-col { min-width: 250px; flex: 1; }
+.prj-detail-col.owners { flex: 1.1; }
+.prj-detail-col h4 {
+    font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.7px;
+    color: """ + grey + """; font-weight: bold; margin-bottom: 10px;
+    border-bottom: 1px solid """ + border + """; padding-bottom: 5px;
+}
+.prj-stakebar { display: flex; height: 9px; border-radius: 5px; overflow: hidden; margin-bottom: 12px; background: #e9ebf2; }
+.prj-stakebar span { display: block; height: 100%; }
+.prj-owners { display: flex; flex-direction: column; gap: 7px; }
+.prj-owner { display: flex; align-items: center; gap: 9px; font-size: 12px; }
+.prj-owner .sw { width: 11px; height: 11px; border-radius: 3px; flex-shrink: 0; }
+.prj-owner .nm { color: """ + db + """; flex: 1; }
+.prj-owner .tag {
+    font-size: 8.5px; text-transform: uppercase; letter-spacing: 0.4px;
+    color: #fff; background: """ + db + """; padding: 1px 6px; border-radius: 9px; margin-left: 7px;
+}
+.prj-owner .pct { font-variant-numeric: tabular-nums; color: """ + db + """; font-weight: bold; }
+.prj-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 12px 20px; }
+.prj-stat { display: flex; flex-direction: column; gap: 2px; }
+.prj-stat .k { font-size: 9px; text-transform: uppercase; letter-spacing: 0.4px; color: """ + grey + """; }
+.prj-stat .v { font-size: 15px; font-weight: bold; color: """ + db + """; font-variant-numeric: tabular-nums; }
+
+/* status badge */
+.prj-badge {
+    display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 10px;
+    font-weight: bold; letter-spacing: 0.2px;
+}
+.prj-badge.s-producing          { background: #E2F0DE; color: #0C5B19; }
+.prj-badge.s-under-construction { background: #FDF1D6; color: #92591C; }
+.prj-badge.s-pre-fid            { background: #E5EAF5; color: #272962; }
+.prj-badge.s-shut-down          { background: #F2DADA; color: #C00000; }
+
+.prj-outlook-stub {
+    display: flex; align-items: center; justify-content: center; min-height: 300px;
+    border: 1px dashed """ + border + """; border-radius: 10px; background: """ + card + """;
+    color: """ + grey + """; font-size: 13px; text-align: center; padding: 20px;
+}
+@media (max-width: 768px) {
+    .projects-tab-wrap { margin: 0 8px 8px; }
+    .prj-filter-bar { gap: 8px; padding: 10px; }
+    .prj-summary { gap: 14px; padding: 10px 12px; }
+    .prj-summary .metric .v { font-size: 16px; }
+}
 """
 
     js = r"""
@@ -1768,6 +2099,7 @@ function updateDatasetUI() {
     document.getElementById('pageTitle').textContent = DATA.title;
     document.title = 'Palissy Advisors - ' + DATA.title;
     var bodyCls = 'dataset-' + currentKey;
+    if (DATA.projects_tab) bodyCls += ' projects-tab';
     if (DATA.composite) bodyCls += ' lng-composite';
     if (DATA.chart_area) bodyCls += ' charts-area';
     if (DATA.has_range) bodyCls += ' has-range';
@@ -1788,6 +2120,7 @@ function switchDataset(key) {
     if (seasonalityChart) { seasonalityChart.destroy(); seasonalityChart = null; }
     if (buildupChart)     { buildupChart.destroy();     buildupChart = null; }
     updateDatasetUI();
+    if (DATA.projects_tab) { prjInit(); return; }   // own filter bar; no unit/period machinery
     rebuildUnitSelector();
     updateRangeSelectors();
     updateGrowthTypeSelector();
@@ -1978,6 +2311,18 @@ function gyMonthLabels() { return ['Oct','Nov','Dec','Jan','Feb','Mar','Apr','Ma
 function gyMonthToActual(gy, gyMonthIndex) {
     if (gyMonthIndex < 3) return { year: gy, month: 10 + gyMonthIndex };
     return { year: gy + 1, month: gyMonthIndex - 2 };
+}
+
+/* Range/seasonality cycle basis: gas-year (Oct->Sep) by default, calendar
+   (Jan->Dec) when the period selector is 'Annual CY'. Shared by every range
+   chart (gas, power, Global LNG, Supply Outlook). */
+function isCalCycle(periodVal) { return periodVal === 'Annual CY'; }
+function cycleLabels(cal) { return cal ? ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] : gyMonthLabels(); }
+function cycleToActual(cal, base, i) { return cal ? { year: base, month: i + 1 } : gyMonthToActual(base, i); }
+function cycleBase(cal) { return cal ? (new Date()).getFullYear() : currentGY(); }
+function cycleSeriesLabel(cal, base, suffix) {
+    return cal ? (String(base) + (suffix || ''))
+               : ('GY ' + String(base).slice(-2) + '/' + String(base + 1).slice(-2) + (suffix || ''));
 }
 
 function findMonthlyIdx(year, month) {
@@ -2180,14 +2525,15 @@ function updateSeasonalityChart() {
 
     var unitKey = document.getElementById('unitSelector').value;
     var lookback = parseInt(document.getElementById('seasonalityLookback').value) || 5;
-    var cgy = currentGY();
+    var cal = isCalCycle(document.getElementById('periodSelector').value);
+    var cgy = cycleBase(cal);
     var prevGY = cgy - 1, nextGY = cgy + 1;
-    var labels = gyMonthLabels();
+    var labels = cycleLabels(cal);
 
     function gyValues(gy) {
         var out = [];
         for (var i = 0; i < 12; i++) {
-            var amt = gyMonthToActual(gy, i);
+            var amt = cycleToActual(cal, gy, i);
             var idx = findMonthlyIdx(amt.year, amt.month);
             if (idx < 0) { out.push(null); continue; }
             var b = sumSourcesAtIndex(selected, idx);
@@ -2200,13 +2546,13 @@ function updateSeasonalityChart() {
     var currVals = gyValues(cgy);
     var nextVals = gyValues(nextGY);
 
-    // Lookback window: `lookback` gas years prior to current
+    // Lookback window: `lookback` years prior to current
     var lbStart = cgy - lookback, lbEnd = cgy - 1;
     var avg = [], mn = [], mx = [];
     for (var mo = 0; mo < 12; mo++) {
         var samples = [];
         for (var gy = lbStart; gy <= lbEnd; gy++) {
-            var amt = gyMonthToActual(gy, mo);
+            var amt = cycleToActual(cal, gy, mo);
             var idx = findMonthlyIdx(amt.year, amt.month);
             if (idx < 0) continue;
             var b = sumSourcesAtIndex(selected, idx);
@@ -2222,16 +2568,16 @@ function updateSeasonalityChart() {
 
     var titleSrc = selected.join(' + ');
     document.getElementById('seasonalityTitle').textContent =
-        'Seasonality (gas-year cycle) — ' + titleSrc + ' (' + getHeaderUnitLabel(unitKey) + efficiencySuffix() + ')';
+        'Seasonality (' + (cal?'calendar':'gas-year') + ' cycle) — ' + titleSrc + ' (' + getHeaderUnitLabel(unitKey) + efficiencySuffix() + ')';
 
     // Order in array drives legend order (after the max filter).
     // We want: range (grey block), average, prev, current, next.
     // The max line must come BEFORE the range line in the dataset array so the
     // range's `fill: '-1'` correctly fills back to it - but we filter it out
     // of the legend.
-    var prevLabel = 'GY ' + String(prevGY).slice(-2) + '/' + String(prevGY+1).slice(-2);
-    var curLabel  = 'GY ' + String(cgy).slice(-2)    + '/' + String(cgy+1).slice(-2)    + ' (current)';
-    var nextLabel = 'GY ' + String(nextGY).slice(-2) + '/' + String(nextGY+1).slice(-2) + ' (forecast)';
+    var prevLabel = cycleSeriesLabel(cal, prevGY);
+    var curLabel  = cycleSeriesLabel(cal, cgy, ' (current)');
+    var nextLabel = cycleSeriesLabel(cal, nextGY, ' (forecast)');
     var datasets = [
         // Invisible max line - exists only to anchor the range fill.
         { label: lookback + 'y max',     data: mx,        borderColor: 'rgba(0,0,0,0)', backgroundColor: 'rgba(0,0,0,0)', pointRadius: 0, fill: false, order: 20 },
@@ -2841,8 +3187,9 @@ function updateGasRangeChart() {
     var unitKey=document.getElementById('unitSelector').value;
     var lookbackEl=document.getElementById('seasonalityLookback');
     var lookback=lookbackEl ? (parseInt(lookbackEl.value)||5) : 5;
-    var cgy=currentGY(), prevGY=cgy-1, nextGY=cgy+1;
-    var labels=gyMonthLabels();
+    var cal=isCalCycle(document.getElementById('periodSelector').value);
+    var cgy=cycleBase(cal), prevGY=cgy-1, nextGY=cgy+1;
+    var labels=cycleLabels(cal);
 
     function valAt(idx) {
         if (idx<0) return null;
@@ -2854,7 +3201,7 @@ function updateGasRangeChart() {
     function gyValues(gy) {
         var out=[];
         for (var i=0;i<12;i++) {
-            var amt=gyMonthToActual(gy,i);
+            var amt=cycleToActual(cal,gy,i);
             out.push(valAt(findMonthlyIdx(amt.year, amt.month)));
         }
         return out;
@@ -2866,7 +3213,7 @@ function updateGasRangeChart() {
     for (var mo=0;mo<12;mo++) {
         var samples=[];
         for (var gy=lbStart;gy<=lbEnd;gy++) {
-            var amt=gyMonthToActual(gy,mo);
+            var amt=cycleToActual(cal,gy,mo);
             var v=valAt(findMonthlyIdx(amt.year, amt.month));
             if (v!==null && v!==undefined) samples.push(v);
         }
@@ -2878,9 +3225,9 @@ function updateGasRangeChart() {
     var unitLabel = res.isPct ? '%' : getHeaderUnitLabel(unitKey);
     document.getElementById('seasonalityTitle').textContent = 'Seasonality';
 
-    var prevLabel='GY '+String(prevGY).slice(-2)+'/'+String(prevGY+1).slice(-2);
-    var curLabel ='GY '+String(cgy).slice(-2)   +'/'+String(cgy+1).slice(-2)   +' (current)';
-    var nextLabel='GY '+String(nextGY).slice(-2)+'/'+String(nextGY+1).slice(-2)+' (forecast)';
+    var prevLabel=cycleSeriesLabel(cal, prevGY);
+    var curLabel =cycleSeriesLabel(cal, cgy, ' (current)');
+    var nextLabel=cycleSeriesLabel(cal, nextGY, ' (forecast)');
     var datasets=[
         { label: lookback+'y max',     data: mx,       borderColor:'rgba(0,0,0,0)', backgroundColor:'rgba(0,0,0,0)', pointRadius:0, fill:false, order:20 },
         { label: lookback+'y range',   data: mn,       borderColor:'rgba(0,0,0,0)', backgroundColor:'rgba(147,149,162,0.28)', pointRadius:0, fill:'-1', order:19 },
@@ -3355,8 +3702,9 @@ function lngUpdateRange(subKey) {
     var selected = lngRangeSelected(subKey);   // leaf labels (or [total_row])
     var unitKey = document.getElementById('unitSelector').value;
     var lookback = parseInt(document.getElementById(ids.lookback).value) || 5;
-    var cgy = currentGY(), prevGY = cgy-1, nextGY = cgy+1;
-    var labels = gyMonthLabels();
+    var cal = isCalCycle(document.getElementById('periodSelector').value);
+    var cgy = cycleBase(cal), prevGY = cgy-1, nextGY = cgy+1;
+    var labels = cycleLabels(cal);
     var latestIdx = LNG.latest_actual ? LNG.latest_actual.index : 1e9;
 
     function valAt(idx) {
@@ -3367,7 +3715,7 @@ function lngUpdateRange(subKey) {
     function gyValues(gy, cap) {
         var out = [];
         for (var i=0;i<12;i++) {
-            var amt = gyMonthToActual(gy, i);
+            var amt = cycleToActual(cal, gy, i);
             var idx = lngFindMonthlyIdx(sub, amt.year, amt.month);
             if (cap && idx > latestIdx) { out.push(null); continue; }   // cap current line at latest actual
             out.push(valAt(idx));
@@ -3380,7 +3728,7 @@ function lngUpdateRange(subKey) {
     for (var mo=0;mo<12;mo++) {
         var samples=[];
         for (var gy=lbStart;gy<=lbEnd;gy++) {
-            var amt = gyMonthToActual(gy, mo);
+            var amt = cycleToActual(cal, gy, mo);
             var v = valAt(lngFindMonthlyIdx(sub, amt.year, amt.month));
             if (v!==null && v!==undefined) samples.push(v);
         }
@@ -3393,9 +3741,9 @@ function lngUpdateRange(subKey) {
     var selLabel = lngRangeLabel(subKey, selected);
     document.getElementById(ids.rangeTitle).textContent = (subKey==='imports'?'Import Range':'Export Range') + ' — ' + selLabel + ' (' + unitLabel + ')';
 
-    var prevLabel = 'GY '+String(prevGY).slice(-2)+'/'+String(prevGY+1).slice(-2);
-    var curLabel  = 'GY '+String(cgy).slice(-2)   +'/'+String(cgy+1).slice(-2)   +' (current)';
-    var nextLabel = 'GY '+String(nextGY).slice(-2)+'/'+String(nextGY+1).slice(-2)+' (forecast)';
+    var prevLabel = cycleSeriesLabel(cal, prevGY);
+    var curLabel  = cycleSeriesLabel(cal, cgy, ' (current)');
+    var nextLabel = cycleSeriesLabel(cal, nextGY, ' (forecast)');
     var datasets = [
         { label: lookback+'y max',     data: mx,       borderColor:'rgba(0,0,0,0)', backgroundColor:'rgba(0,0,0,0)', pointRadius:0, fill:false, order:20 },
         { label: lookback+'y range',   data: mn,       borderColor:'rgba(0,0,0,0)', backgroundColor:'rgba(147,149,162,0.28)', pointRadius:0, fill:'-1', order:19 },
@@ -3721,6 +4069,546 @@ document.addEventListener('click', function(e) {
     }
 });
 
+/* ============================================================
+   LNG PROJECTS tab — project database with a progressive filter bar and a
+   Region -> Country -> Project tree (Sub-tab 1 "Projects"). Self-contained;
+   no unit/period machinery. Sub-tab 2 "Supply Outlook" is stubbed for now.
+   ============================================================ */
+var PRJ = null;
+var prjFilters = { table:{status:[],region:[],country:[],company:[],project:[]},
+                   chart:{status:[],region:[],country:[],company:[],project:[]} };
+var prjChartLinked = true;            // charts follow the table filters by default
+var prjExpanded = {};      // assumptions tree: 'r|Region' | 'c|Region|Country' | 'p|Name'
+var prjOutExpanded = {};   // supply-outlook tree expand state (shared by production + change)
+var prjSubtab = 'outlook'; // default sub-tab
+var prjChangeMode = 'pct'; // change table: 'pct' | 'abs'
+var prjRangeChart = null, prjStackChart = null;   // Supply Outlook charts
+var PRJ_DIMS = [['prjFilterStatus','status'],['prjFilterRegion','region'],
+                ['prjFilterCountry','country'],['prjFilterCompany','company'],
+                ['prjFilterProject','project']];
+
+/* Unit conversion (base = mmt). Capacity is an ANNUAL figure -> rate units use a
+   365.25-day year; production is a per-period flow -> rate units use period days. */
+function prjUnit(){ var s=document.getElementById('prjUnit'); return (s&&s.value)?s.value:PRJ.default_unit; }
+function prjUnitCfg(){ return PRJ.unit_config[prjUnit()] || PRJ.unit_config[PRJ.default_unit]; }
+function prjUnitLabel(){ var c=prjUnitCfg(); return c.isRate?c.rateLabel:c.volLabel; }
+function prjConvCap(mmt){ if(mmt==null||mmt===''||isNaN(mmt)) return null; var c=prjUnitCfg(); return c.isRate?(mmt/365.25)*c.rateFactor:mmt*c.volFactor; }
+function prjConvFlow(mmt,days){ if(mmt==null||isNaN(mmt)) return 0; var c=prjUnitCfg(); return c.isRate?(mmt/days)*c.rateFactor:mmt*c.volFactor; }
+function prjOnUnitChange(){ prjRenderSummary(); prjRenderTree(); prjOutlookRender(); }
+
+function prjEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+function prjNum(v,dec){ if(v==null||v===''||isNaN(v)) return '—'; return Number(v).toFixed(dec).replace(/\B(?=(\d{3})+(?!\d))/g,','); }
+function prjPct(v){ if(v==null||v===''||isNaN(v)) return '—'; return Math.round(Number(v)*100)+'%'; }
+function prjStake(v){ if(v==null||v===''||isNaN(v)) return '—'; return (Number(v)*100).toFixed(1)+'%'; }
+var PRJ_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function prjStart(s){
+    if(!s) return '—';
+    var m=String(s).match(/^(\d{4})-(\d{2})/);
+    if(!m) return String(s);
+    return PRJ_MONTHS[parseInt(m[2],10)-1] + ' ' + m[1];   // "Jan 2029"
+}
+// Owner colors: operator gets Palissy dark blue; partners cycle a palette.
+var PRJ_OWNER_COLORS = ['#272962','#539648','#C00000','#258EEB','#E5B83A','#0C5B19','#8E44AD','#92591C','#2A9D8F','#708B5A'];
+function prjSum(arr,key){ var s=0; for(var i=0;i<arr.length;i++){ var v=arr[i][key]; if(typeof v==='number'&&!isNaN(v)) s+=v; } return s; }
+function prjFieldVal(p,dim){ return dim==='project'?p.name : dim==='status'?p.status : dim==='region'?p.region : dim==='country'?p.country : null; }
+function prjCap(s){ return s.charAt(0).toUpperCase()+s.slice(1); }
+function prjContainerId(scope,dim){ return (scope==='chart'?'prjcFilter':'prjFilter')+prjCap(dim); }
+function prjMatchDim(p,dim,scope){
+    var sel=prjFilters[scope][dim]; if(!sel.length) return true;
+    if(dim==='company') return p.companies.some(function(c){return sel.indexOf(c)>=0;});
+    return sel.indexOf(prjFieldVal(p,dim))>=0;
+}
+function prjMatchExcept(p,exceptDim,scope){ return PRJ_DIMS.every(function(d){ return d[1]===exceptDim || prjMatchDim(p,d[1],scope); }); }
+function prjFilteredFor(scope){ return PRJ.projects.filter(function(p){ return PRJ_DIMS.every(function(d){ return prjMatchDim(p,d[1],scope); }); }); }
+function prjFiltered(){ return prjFilteredFor('table'); }   // assumptions + summary always use table filters
+function prjAvailableValues(dim,scope){
+    var out=[], seen={};
+    PRJ.projects.forEach(function(p){
+        if(!prjMatchExcept(p,dim,scope)) return;
+        var vals = dim==='company' ? p.companies : [prjFieldVal(p,dim)];
+        vals.forEach(function(v){ if(v!=null && !seen[v]){ seen[v]=1; out.push(v); } });
+    });
+    return out;
+}
+
+function prjInit(){
+    PRJ = DATA;
+    prjFilters = { table:{status:[],region:[],country:[],company:[],project:[]},
+                   chart:{status:[],region:[],country:[],company:[],project:[]} };
+    prjChartLinked = true;
+    prjExpanded = {}; prjOutExpanded = {}; prjSubtab = 'outlook';
+    prjChangeMode = 'pct';
+    var us = document.getElementById('prjUnit');
+    if (us) { us.innerHTML=''; PRJ.units.forEach(function(u){ us.innerHTML += '<option value="'+u+'"'+(u===PRJ.default_unit?' selected':'')+'>'+u+'</option>'; }); }
+    if (prjRangeChart) { prjRangeChart.destroy(); prjRangeChart = null; }
+    if (prjStackChart) { prjStackChart.destroy(); prjStackChart = null; }
+    prjBuildFilters('table');
+    prjBuildFilters('chart');
+    prjCloneOutlookControls('prjcViewBy','prjcPeriod');   // fill chart view/period option lists
+    prjOutlookPopulateRange();
+    prjOutlookPopulateLookback();
+    prjSetLink(true);                                     // start linked (chart controls hidden)
+    prjSetSubtab('outlook');
+    prjApplyFilters();
+}
+// table filters changed -> re-render assumptions + production + change + (charts if linked)
+function prjApplyFilters(){ prjUpdateFilterUI('table'); prjRenderSummary(); prjRenderTree(); prjOutlookRender(); }
+// chart filters changed -> re-render only the charts
+function prjChartApply(){ prjUpdateFilterUI('chart'); prjOutlookCharts(); }
+
+function prjBuildFilters(scope){
+    prjMakeFilter(scope, prjContainerId(scope,'status'),  'status',  PRJ.status_order);
+    prjMakeFilter(scope, prjContainerId(scope,'region'),  'region',  PRJ.region_order);
+    prjMakeFilter(scope, prjContainerId(scope,'country'), 'country', PRJ.countries);
+    prjMakeFilter(scope, prjContainerId(scope,'company'), 'company', PRJ.companies);
+    prjMakeFilter(scope, prjContainerId(scope,'project'), 'project', PRJ.projects.map(function(p){return p.name;}).slice().sort());
+}
+function prjMakeFilter(scope, containerId, dimKey, items){
+    var container=document.getElementById(containerId); if(!container) return;
+    container.innerHTML=''; container.classList.add('multi-select');
+    var button=document.createElement('button'); button.type='button'; button.className='ms-button'; container.appendChild(button);
+    var panel=document.createElement('div'); panel.className='ms-panel'; container.appendChild(panel);
+    var search=document.createElement('input'); search.type='text'; search.className='ms-search'; search.placeholder='Search…';
+    search.addEventListener('input', function(){ prjUpdateFilterUI(scope); });
+    search.addEventListener('click', function(e){ e.stopPropagation(); });
+    panel.appendChild(search);
+    var allLbl=document.createElement('label'); allLbl.className='ms-item ms-all'; allLbl.setAttribute('data-val','__ALL__');
+    var allCb=document.createElement('input'); allCb.type='checkbox';
+    var allSp=document.createElement('span'); allSp.textContent='All';
+    allLbl.appendChild(allCb); allLbl.appendChild(allSp);
+    allCb.addEventListener('change', function(){ prjToggle(scope, dimKey,'__ALL__'); });
+    panel.appendChild(allLbl);
+    var allDiv=document.createElement('div'); allDiv.className='ms-divider'; panel.appendChild(allDiv);
+    items.forEach(function(it){
+        var lbl=document.createElement('label'); lbl.className='ms-item'; lbl.setAttribute('data-val', it);
+        var cb=document.createElement('input'); cb.type='checkbox';
+        var sp=document.createElement('span'); sp.textContent=it;
+        lbl.appendChild(cb); lbl.appendChild(sp);
+        cb.addEventListener('change', function(){ prjToggle(scope, dimKey, it); });
+        panel.appendChild(lbl);
+    });
+    button.addEventListener('click', function(ev){ ev.stopPropagation(); container.classList.toggle('open'); });
+}
+// Most-granular selected dimension -> the view the charts should snap to.
+function prjSuggestView(scope){
+    var f=prjFilters[scope];
+    if(f.company.length || f.project.length) return 'project';
+    if(f.country.length) return 'country';
+    return 'region';
+}
+function prjToggle(scope, dimKey, val){
+    if(val==='__ALL__'){ prjFilters[scope][dimKey]=[]; }
+    else { var arr=prjFilters[scope][dimKey], i=arr.indexOf(val); if(i>=0) arr.splice(i,1); else arr.push(val); }
+    // Selecting a company -> project view; a country -> country view; region -> region.
+    // (A status toggle doesn't change the view.) Applies to the matching scope's
+    // view dropdown — table when linked drives both table + charts.
+    if(dimKey!=='status'){
+        var vbEl=document.getElementById(scope==='chart' ? 'prjcViewBy' : 'prjViewBy');
+        if(vbEl) vbEl.value=prjSuggestView(scope);
+    }
+    if(scope==='table') prjApplyFilters(); else prjChartApply();
+}
+function prjResetFilters(scope){
+    prjFilters[scope]={status:[],region:[],country:[],company:[],project:[]};
+    if(scope==='table') prjApplyFilters(); else prjChartApply();
+}
+function prjUpdateFilterUI(scope){
+    PRJ_DIMS.forEach(function(d){
+        var dim=d[1];
+        var container=document.getElementById(prjContainerId(scope,dim)); if(!container) return;
+        var avail=prjAvailableValues(dim,scope);
+        var search=container.querySelector('.ms-search'); var q=((search&&search.value)||'').toLowerCase();
+        var items=container.querySelectorAll('label.ms-item');
+        for(var i=0;i<items.length;i++){
+            var val=items[i].getAttribute('data-val');
+            var cb=items[i].querySelector('input');
+            if(val==='__ALL__'){ if(cb) cb.checked=(prjFilters[scope][dim].length===0); items[i].classList.remove('ms-unavail'); continue; }
+            var checked=prjFilters[scope][dim].indexOf(val)>=0;
+            if(cb) cb.checked=checked;
+            var ok=(avail.indexOf(val)>=0 || checked) && (!q || val.toLowerCase().indexOf(q)>=0);
+            items[i].classList.toggle('ms-unavail', !ok);
+        }
+        var btn=container.querySelector('.ms-button'); var sel=prjFilters[scope][dim];
+        btn.textContent = sel.length===0 ? 'All' : (sel.length<=2 ? sel.join(', ') : sel.length+' selected');
+        btn.title=sel.join(', ');
+    });
+}
+
+function prjRenderSummary(){
+    var f=prjFiltered(), ul=prjUnitLabel();
+    function pill(v,k,acc){ return '<div class="prj-pill'+(acc?' accent':'')+'"><span class="v">'+v+'</span><span class="k">'+k+'</span></div>'; }
+    document.getElementById('prjSummary').innerHTML =
+        pill(f.length, 'Projects', false)
+        + pill(prjNum(prjConvCap(prjSum(f,'unrisked')),1)+' '+ul, 'Unrisked capacity', false)
+        + pill(prjNum(prjConvCap(prjSum(f,'risked')),1)+' '+ul, 'Risked capacity', false);
+}
+
+function prjBadge(status){
+    var cls=String(status||'').toLowerCase().replace(/[^a-z]+/g,'-').replace(/^-|-$/g,'');
+    return '<span class="prj-badge s-'+cls+'">'+prjEsc(status)+'</span>';
+}
+function prjRowAgg(cls, key, indent, label, n, unr, rk, exp){
+    return '<tr class="'+cls+'" data-prj-x="'+prjEsc(key)+'">'
+        + '<td><span class="prj-arrow'+(exp?' expanded':'')+'">&#9654;</span> '+prjEsc(label)
+        + ' <span style="color:#9395A2;font-weight:normal;">('+n+')</span></td>'
+        + '<td></td><td>'+prjNum(prjConvCap(unr),1)+'</td><td>'+prjNum(prjConvCap(rk),1)+'</td><td></td><td></td><td></td></tr>';
+}
+function prjRowProject(p, exp){
+    return '<tr class="prj-row-project" data-prj-x="p|'+prjEsc(p.name)+'">'
+        + '<td><span class="prj-arrow'+(exp?' expanded':'')+'">&#9654;</span> '+prjEsc(p.name)+'</td>'
+        + '<td style="text-align:left;">'+prjBadge(p.status)+'</td>'
+        + '<td>'+prjNum(prjConvCap(p.unrisked),1)+'</td><td>'+prjNum(prjConvCap(p.risked),1)+'</td>'
+        + '<td>'+prjPct(p.cos)+'</td><td>'+prjStart(p.start)+'</td>'
+        + '<td>'+prjEsc(p.operator||'—')+'</td></tr>';
+}
+function prjRowDetail(p){
+    var owners = p.owners || [];
+    // Stake bar (only for owners with a numeric stake; grey out any unallocated remainder).
+    var bar='', allocated=0, anyStake=false;
+    owners.forEach(function(o,i){
+        if(typeof o.stake==='number' && !isNaN(o.stake)){
+            anyStake=true; allocated+=o.stake;
+            bar+='<span style="width:'+(o.stake*100).toFixed(2)+'%;background:'+PRJ_OWNER_COLORS[i%PRJ_OWNER_COLORS.length]+'" title="'+prjEsc(o.name)+' '+prjStake(o.stake)+'"></span>';
+        }
+    });
+    if(anyStake && allocated<0.999) bar+='<span style="width:'+((1-allocated)*100).toFixed(2)+'%;background:#cdd0db" title="Unallocated"></span>';
+    var barHtml = anyStake ? '<div class="prj-stakebar">'+bar+'</div>' : '';
+    var ownerList = owners.length
+        ? owners.map(function(o,i){
+            var sw='<span class="sw" style="background:'+PRJ_OWNER_COLORS[i%PRJ_OWNER_COLORS.length]+'"></span>';
+            var tag = i===0 ? '<span class="tag">Operator</span>' : '';
+            return '<div class="prj-owner">'+sw+'<span class="nm">'+prjEsc(o.name)+tag+'</span><span class="pct">'+prjStake(o.stake)+'</span></div>';
+          }).join('')
+        : '<div class="prj-owner"><span class="nm" style="color:#9395A2;">Not available</span></div>';
+
+    function stat(k,v){ return '<div class="prj-stat"><span class="k">'+k+'</span><span class="v">'+v+'</span></div>'; }
+    var stats = stat('Start', prjStart(p.start))
+        + stat('Chance of success', prjPct(p.cos))
+        + stat('Utilisation forecast', prjPct(p.util_forecast))
+        + stat('Utilisation decline', prjPct(p.util_decline))
+        + stat('Unrisked capacity', prjNum(prjConvCap(p.unrisked),2)+' '+prjUnitLabel())
+        + stat('Risked capacity', prjNum(prjConvCap(p.risked),2)+' '+prjUnitLabel());
+
+    return '<tr class="prj-detail"><td colspan="7"><div class="prj-detail-inner">'
+        + '<div class="prj-detail-col owners"><h4>Ownership</h4>'+barHtml+'<div class="prj-owners">'+ownerList+'</div></div>'
+        + '<div class="prj-detail-col"><h4>Key assumptions</h4><div class="prj-stats">'+stats+'</div></div>'
+        + '</div></td></tr>';
+}
+function prjRenderTree(){
+    var f=prjFiltered(), ul=prjUnitLabel();
+    document.getElementById('prjTableHead').innerHTML =
+        '<tr><th>Project</th><th style="text-align:left;">Status</th><th>Unrisked ('+ul+')</th>'
+        + '<th>Risked ('+ul+')</th><th>CoS</th><th>Start</th><th>Operator</th></tr>';
+    var byRegion={};
+    f.forEach(function(p){ (byRegion[p.region]=byRegion[p.region]||[]).push(p); });
+    var html='';
+    PRJ.region_order.forEach(function(region){
+        var rp=byRegion[region]; if(!rp||!rp.length) return;
+        var rExp=!!prjExpanded['r|'+region];
+        html+=prjRowAgg('prj-row-region','r|'+region,0,region,rp.length,prjSum(rp,'unrisked'),prjSum(rp,'risked'),rExp);
+        if(!rExp) return;
+        var byC={}; rp.forEach(function(p){ (byC[p.country]=byC[p.country]||[]).push(p); });
+        Object.keys(byC).sort(function(a,b){ return prjSum(byC[b],'risked')-prjSum(byC[a],'risked'); }).forEach(function(country){
+            var cp=byC[country]; var ckey='c|'+region+'|'+country; var cExp=!!prjExpanded[ckey];
+            html+=prjRowAgg('prj-row-country',ckey,1,country,cp.length,prjSum(cp,'unrisked'),prjSum(cp,'risked'),cExp);
+            if(!cExp) return;
+            cp.slice().sort(function(a,b){ return (b.risked||0)-(a.risked||0); }).forEach(function(p){
+                var pExp=!!prjExpanded['p|'+p.name];
+                html+=prjRowProject(p,pExp);
+                if(pExp) html+=prjRowDetail(p);
+            });
+        });
+    });
+    if(!html) html='<tr><td colspan="7" style="text-align:center;color:#9395A2;padding:20px;">No projects match the current filters.</td></tr>';
+    document.getElementById('prjTableBody').innerHTML=html;
+}
+
+function prjSetSubtab(t){
+    prjSubtab=t;
+    document.getElementById('prjSubtabProjects').classList.toggle('active', t==='projects');
+    document.getElementById('prjSubtabOutlook').classList.toggle('active', t==='outlook');
+    document.getElementById('prjPaneProjects').classList.toggle('active', t==='projects');
+    document.getElementById('prjPaneOutlook').classList.toggle('active', t==='outlook');
+}
+
+// Region/Country/Project expand toggles (event delegation on the tree).
+document.addEventListener('click', function(e){
+    var tr=e.target.closest('tr[data-prj-x]'); if(!tr) return;
+    var key=tr.getAttribute('data-prj-x');
+    prjExpanded[key]=!prjExpanded[key];
+    prjRenderTree();
+});
+
+/* ---- Supply Outlook: project-level production table + change table + charts.
+        View by Region/Country/Project; unit/period/from-to controls. ---- */
+function prjDefaultRange(period, view, fs, ts){
+    var from=0, to=view.col_meta.length-1;
+    if(period==='Monthly'){
+        for(var i=0;i<view.col_meta.length;i++){ if(view.col_meta[i].year===2025 && view.col_meta[i].month===1){ from=i; break; } }
+        to=Math.min(view.col_meta.length-1, from+35);   // Jan 2025 -> +35 months
+    } else {
+        for(var i=0;i<view.col_meta.length;i++){ if(view.col_meta[i].year>=2020){ from=i; break; } }
+        for(var i=view.col_meta.length-1;i>=0;i--){ if(view.col_meta[i].year<=2035){ to=i; break; } }
+    }
+    fs.value=from; ts.value=to;
+}
+function prjFillRangeOptions(view, fs, ts){
+    var html=''; for(var i=0;i<view.col_meta.length;i++) html+='<option value="'+i+'">'+view.col_meta[i].label+'</option>';
+    fs.innerHTML=html; ts.innerHTML=html;
+}
+function prjOutlookPopulateRange(){
+    var sel=document.getElementById('prjPeriod'); if(!sel) return;
+    var view=PRJ.production.views[sel.value]; if(!view) return;
+    var fs=document.getElementById('prjFrom'), ts=document.getElementById('prjTo');
+    prjFillRangeOptions(view, fs, ts); prjDefaultRange(sel.value, view, fs, ts);
+}
+function prjOnOutlookPeriod(){ prjOutlookPopulateRange(); prjOutlookRender(); }
+function prjVisIndices(view, fromEl, toEl){
+    var fi=parseInt(fromEl.value), ti=parseInt(toEl.value);
+    if(isNaN(fi)||isNaN(ti)){ fi=0; ti=view.col_meta.length-1; }
+    if(fi>ti){ var t=fi; fi=ti; ti=t; }
+    var out=[]; for(var i=fi;i<=ti;i++) out.push(i); return out;
+}
+
+// Shared Region/Country/Project tree builder. cellsFn(names) -> the value <td>s.
+function prjBuildTree(viewBy, leaves, prod, vis, cellsFn){
+    function nm(p){ return p.name; }
+    function groupBy(list,key){ var g={}; list.forEach(function(p){ (g[p[key]]=g[p[key]]||[]).push(p); }); return g; }
+    function tot(names){ var s=0; for(var n=0;n<names.length;n++){ var b=prod[names[n]]; if(b) for(var k=0;k<vis.length;k++) s+=b[vis[k]]; } return s; }
+    function byTotDesc(a,b){ return tot([b.name])-tot([a.name]); }
+    function aggRow(cls,key,label,n,names,exp){
+        return '<tr class="'+cls+'" data-prj-ox="'+prjEsc(key)+'"><td><span class="prj-arrow'+(exp?' expanded':'')+'">&#9654;</span> '
+            + prjEsc(label)+' <span style="color:#9395A2;font-weight:normal;">('+n+')</span></td>'+cellsFn(names)+'</tr>';
+    }
+    function projRow(p){ return '<tr class="prj-row-project"><td>'+prjEsc(p.name)+'</td>'+cellsFn([p.name])+'</tr>'; }
+    var body='';
+    if(viewBy==='project'){
+        leaves.slice().sort(byTotDesc).forEach(function(p){ body+=projRow(p); });
+    } else if(viewBy==='country'){
+        var byC=groupBy(leaves,'country');
+        Object.keys(byC).sort(function(a,b){ return tot(byC[b].map(nm))-tot(byC[a].map(nm)); }).forEach(function(c){
+            var cExp=!!prjOutExpanded['c|'+c];
+            body+=aggRow('prj-row-country','c|'+c,c,byC[c].length,byC[c].map(nm),cExp);
+            if(cExp) byC[c].slice().sort(byTotDesc).forEach(function(p){ body+=projRow(p); });
+        });
+    } else {
+        var byR=groupBy(leaves,'region');
+        PRJ.region_order.forEach(function(region){
+            var rp=byR[region]; if(!rp||!rp.length) return;
+            var rExp=!!prjOutExpanded['r|'+region];
+            body+=aggRow('prj-row-region','r|'+region,region,rp.length,rp.map(nm),rExp);
+            if(!rExp) return;
+            var byC=groupBy(rp,'country');
+            Object.keys(byC).sort(function(a,b){ return tot(byC[b].map(nm))-tot(byC[a].map(nm)); }).forEach(function(c){
+                var ckey='r|'+region+'|'+c; var cExp=!!prjOutExpanded[ckey];
+                body+=aggRow('prj-row-country',ckey,c,byC[c].length,byC[c].map(nm),cExp);
+                if(cExp) byC[c].slice().sort(byTotDesc).forEach(function(p){ body+=projRow(p); });
+            });
+        });
+    }
+    var allNames=leaves.map(nm);
+    if(allNames.length) body+='<tr class="prj-row-total"><td>Total ('+allNames.length+')</td>'+cellsFn(allNames)+'</tr>';
+    return body;
+}
+
+function prjOutlookRender(){
+    if(!PRJ || !PRJ.production) return;
+    var period=document.getElementById('prjPeriod').value;
+    var view=PRJ.production.views[period]; if(!view) return;
+    var vis=prjVisIndices(view, document.getElementById('prjFrom'), document.getElementById('prjTo'));
+    var viewBy=document.getElementById('prjViewBy').value, ul=prjUnitLabel();
+    var prod={}; view.rows.forEach(function(r){ prod[r.label]=r.base; });
+    var leaves=prjFiltered().filter(function(p){ return prod[p.name]; });
+
+    var hHtml='<tr><th>Production ('+ul+')<span class="unit-label"> ('+period+')</span></th>';
+    for(var i=0;i<vis.length;i++) hHtml+='<th>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
+    document.getElementById('prjOutlookHead').innerHTML=hHtml+'</tr>';
+
+    function cellsFn(names){
+        var s='';
+        for(var k=0;k<vis.length;k++){ var ci=vis[k], sum=0; for(var n=0;n<names.length;n++){ var b=prod[names[n]]; if(b) sum+=b[ci]; } s+='<td>'+formatNum(prjConvFlow(sum, view.days[ci]), false)+'</td>'; }
+        return s;
+    }
+    var body=prjBuildTree(viewBy, leaves, prod, vis, cellsFn);
+    if(!body) body='<tr><td colspan="'+(vis.length+1)+'" style="text-align:center;color:#9395A2;padding:20px;">No projects match the current filters.</td></tr>';
+    document.getElementById('prjOutlookBody').innerHTML=body;
+    prjChangeRender();
+    prjOutlookCharts();
+}
+
+/* Change table (under the production table): YoY/MoM/YTD/LTM/YTD-GY + %/abs,
+   same engine as the gas balance growth table, on the production series. */
+function prjSyncChangeType(){
+    var period=document.getElementById('prjPeriod').value;
+    var opts=GROWTH_OPTS[period]||[{k:'yoy',l:'Year-on-Year'}];
+    var sel=document.getElementById('prjChangeType'); if(!sel) return;
+    var cur=sel.value, valid=opts.some(function(o){return o.k===cur;});
+    if(!valid) cur=opts[0].k;
+    sel.innerHTML=opts.map(function(o){return '<option value="'+o.k+'"'+(o.k===cur?' selected':'')+'>'+o.l+'</option>';}).join('');
+}
+function prjSetChangeMode(m){
+    prjChangeMode=m;
+    document.getElementById('prjChangePct').className=m==='pct'?'active':'';
+    document.getElementById('prjChangeAbs').className=m==='abs'?'active':'';
+    prjChangeRender();
+}
+function prjChangeRender(){
+    if(!PRJ || !PRJ.production) return;
+    var period=document.getElementById('prjPeriod').value;
+    var view=PRJ.production.views[period]; if(!view) return;
+    prjSyncChangeType();
+    var gt=document.getElementById('prjChangeType').value;
+    var vis=prjVisIndices(view, document.getElementById('prjFrom'), document.getElementById('prjTo'));
+    var viewBy=document.getElementById('prjViewBy').value;
+    var prod={}; view.rows.forEach(function(r){ prod[r.label]=r.base; });
+    var leaves=prjFiltered().filter(function(p){ return prod[p.name]; });
+
+    var hHtml='<tr><th>Change<span class="unit-label"> ('+period+')</span></th>';
+    for(var i=0;i<vis.length;i++) hHtml+='<th>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
+    document.getElementById('prjChangeHead').innerHTML=hHtml+'</tr>';
+
+    var prevMode=growthMode; growthMode=prjChangeMode;   // computeGrowthCell + formatGrowth read this
+    var ncol=view.col_meta.length;
+    function aggBase(names){ var a=new Array(ncol); for(var i=0;i<ncol;i++) a[i]=0; for(var n=0;n<names.length;n++){ var b=prod[names[n]]; if(b) for(var i=0;i<ncol;i++) a[i]+=b[i]; } return a; }
+    function cellsFn(names){
+        var base=aggBase(names), s='';
+        for(var k=0;k<vis.length;k++){
+            var gv=computeGrowthCell(base, view.days, view.col_meta, vis[k], period, gt, false);
+            if(gv===null){ s+='<td></td>'; continue; }
+            var cls=gv>0.0001?'g-pos':(gv<-0.0001?'g-neg':'');
+            s+='<td'+(cls?' class="'+cls+'"':'')+'>'+formatGrowth(gv,false)+'</td>';
+        }
+        return s;
+    }
+    var body=prjBuildTree(viewBy, leaves, prod, vis, cellsFn);
+    if(!body) body='<tr><td colspan="'+(vis.length+1)+'" style="text-align:center;color:#9395A2;padding:20px;">No projects match the current filters.</td></tr>';
+    document.getElementById('prjChangeBody').innerHTML=body;
+    growthMode=prevMode;
+}
+
+/* ---- Chart-filters link/unlink: charts follow the table filters by default;
+        when unlinked the chart section drives the charts with its own copy. ---- */
+function prjCloneOutlookControls(viewId, periodId){
+    var vb=document.getElementById(viewId);
+    if(vb) vb.innerHTML='<option value="region">Region</option><option value="country">Country</option><option value="project">Project</option>';
+    var pd=document.getElementById(periodId);
+    if(pd){ var L={'Monthly':'Monthly','Quarterly':'Quarterly','Annual CY':'Annual (Calendar Year)','Gas Year':'Annual (Gas Year)','Winter':'Winter (Oct-Mar)','Summer':'Summer (Apr-Sep)'};
+        pd.innerHTML=['Monthly','Quarterly','Annual CY','Gas Year','Winter','Summer'].map(function(p){return '<option value="'+p+'"'+(p==='Annual CY'?' selected':'')+'>'+L[p]+'</option>';}).join(''); }
+}
+function prjChartScope(){ return prjChartLinked ? 'table' : 'chart'; }
+function prjChartProjects(){ return prjFilteredFor(prjChartScope()); }
+function prjChartViewBy(){ return document.getElementById(prjChartLinked?'prjViewBy':'prjcViewBy').value; }
+function prjChartPeriodVal(){ return document.getElementById(prjChartLinked?'prjPeriod':'prjcPeriod').value; }
+function prjChartFromEl(){ return document.getElementById(prjChartLinked?'prjFrom':'prjcFrom'); }
+function prjChartToEl(){ return document.getElementById(prjChartLinked?'prjTo':'prjcTo'); }
+function prjcPopulateRange(copyFromTable){
+    var period=document.getElementById('prjcPeriod').value; var view=PRJ.production.views[period]; if(!view) return;
+    var fs=document.getElementById('prjcFrom'), ts=document.getElementById('prjcTo'); if(!fs||!ts) return;
+    prjFillRangeOptions(view, fs, ts);
+    if(copyFromTable && document.getElementById('prjPeriod').value===period){
+        fs.value=document.getElementById('prjFrom').value; ts.value=document.getElementById('prjTo').value;
+    } else { prjDefaultRange(period, view, fs, ts); }
+}
+function prjcOnPeriod(){ prjcPopulateRange(false); prjOutlookCharts(); }
+function prjSetLink(linked){
+    prjChartLinked=linked;
+    var btn=document.getElementById('prjLinkBtn');
+    if(btn){ btn.classList.toggle('active', linked); btn.textContent = linked ? '✓ Linked to table filters' : 'Unlinked — independent'; }
+    var ctrls=document.getElementById('prjChartFilterControls'); if(ctrls) ctrls.style.display = linked ? 'none' : 'flex';
+    if(!linked){
+        ['status','region','country','company','project'].forEach(function(d){ prjFilters.chart[d]=prjFilters.table[d].slice(); });
+        var vb=document.getElementById('prjcViewBy'); if(vb) vb.value=document.getElementById('prjViewBy').value;
+        var pd=document.getElementById('prjcPeriod'); if(pd) pd.value=document.getElementById('prjPeriod').value;
+        prjcPopulateRange(true);
+        prjUpdateFilterUI('chart');
+    }
+    prjOutlookCharts();
+}
+function prjToggleLink(){ prjSetLink(!prjChartLinked); }
+
+/* ---- Supply Outlook charts: range (gas-year cycle of total filtered production)
+        + stacked area (production over time, grouped by the View-by dimension). ---- */
+function prjOutlookPopulateLookback(){
+    var sel=document.getElementById('prjRangeLookback'); if(!sel) return;
+    var firstYear=PRJ.production.views.Monthly.col_meta[0].year;
+    var maxLb=Math.max(3, currentGY()-firstYear);
+    var html=''; for(var n=3;n<=maxLb;n++) html+='<option value="'+n+'"'+(n===5?' selected':'')+'>'+n+' years</option>';
+    sel.innerHTML=html;
+}
+function prjOutlookCharts(){ if(!PRJ||!PRJ.production) return; prjRangeChartRender(); prjStackChartRender(); }
+
+function prjRangeChartRender(){
+    var unit=prjUnit(), ul=prjUnitLabel(), mv=PRJ.production.views.Monthly;
+    var prod={}; mv.rows.forEach(function(r){ prod[r.label]=r.base; });
+    var leaves=prjChartProjects().filter(function(p){ return prod[p.name]; });
+    var n=mv.col_meta.length, tot=new Array(n); for(var i=0;i<n;i++) tot[i]=0;
+    leaves.forEach(function(p){ var b=prod[p.name]; for(var i=0;i<n;i++) tot[i]+=b[i]; });
+    var idxMap={}; for(var i=0;i<mv.col_meta.length;i++) idxMap[mv.col_meta[i].year+'-'+mv.col_meta[i].month]=i;
+    var lbEl=document.getElementById('prjRangeLookback'); var lookback=lbEl?(parseInt(lbEl.value)||5):5;
+    var cal=isCalCycle(prjChartPeriodVal());
+    var cgy=cycleBase(cal), prevGY=cgy-1, nextGY=cgy+1, labels=cycleLabels(cal);
+    var latestIdx=PRJ.latest_actual?PRJ.latest_actual.index:1e9;
+    function findIdx(y,m){ var k=y+'-'+m; return (k in idxMap)?idxMap[k]:-1; }
+    function valAt(idx){ if(idx==null||idx<0) return null; return applyUnitConversion(tot[idx], unit, mv.days[idx]); }
+    // Show the FULL current cycle, including the forecast tail — production is a
+    // reported+forecast series, so no actual-only cap here.
+    function gyVals(gy){ var out=[]; for(var i=0;i<12;i++){ var a=cycleToActual(cal,gy,i); out.push(valAt(findIdx(a.year,a.month))); } return out; }
+    var prevVals=gyVals(prevGY), curVals=gyVals(cgy), nextVals=gyVals(nextGY);
+    var lbStart=cgy-lookback, lbEnd=cgy-1, avg=[],mn=[],mx=[];
+    for(var mo=0;mo<12;mo++){ var s=[]; for(var gy=lbStart;gy<=lbEnd;gy++){ var a=cycleToActual(cal,gy,mo); var v=valAt(findIdx(a.year,a.month)); if(v!=null) s.push(v);} if(!s.length){avg.push(null);mn.push(null);mx.push(null);continue;} var su=0;for(var k=0;k<s.length;k++)su+=s[k]; avg.push(su/s.length); mn.push(Math.min.apply(null,s)); mx.push(Math.max.apply(null,s)); }
+    document.getElementById('prjRangeTitle').textContent='Production Range — '+leaves.length+' projects ('+ul+')';
+    var prevLabel=cycleSeriesLabel(cal, prevGY);
+    var curLabel =cycleSeriesLabel(cal, cgy, ' (current)');
+    var nextLabel=cycleSeriesLabel(cal, nextGY, ' (forecast)');
+    var datasets=[
+        { label: lookback+'y max',     data: mx,       borderColor:'rgba(0,0,0,0)', backgroundColor:'rgba(0,0,0,0)', pointRadius:0, fill:false, order:20 },
+        { label: lookback+'y range',   data: mn,       borderColor:'rgba(0,0,0,0)', backgroundColor:'rgba(147,149,162,0.28)', pointRadius:0, fill:'-1', order:19 },
+        { label: lookback+'y average', data: avg,      borderColor:'#272962', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, pointRadius:0, fill:false, tension:0.25, order:4 },
+        { label: prevLabel,            data: prevVals, borderColor:'#0C5B19', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, pointRadius:2, fill:false, tension:0.25, order:3 },
+        { label: curLabel,             data: curVals,  borderColor:'#C00000', backgroundColor:'rgba(0,0,0,0)', borderWidth:2.6, pointRadius:3, fill:false, tension:0.25, order:1 },
+        { label: nextLabel,            data: nextVals, borderColor:'#539648', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, borderDash:[6,4], pointRadius:2, fill:false, tension:0.25, order:2 },
+    ];
+    var opts=chartOptionsLine(unit); opts.scales.y.title.text=ul;
+    if(prjRangeChart){ prjRangeChart.destroy(); prjRangeChart=null; }
+    var c=document.getElementById('prjRangeCanvas'); if(!c) return;
+    prjRangeChart=new Chart(c,{type:'line',data:{labels:labels,datasets:datasets},options:opts});
+    renderHtmlLegend(prjRangeChart,'prjRangeLegend',{filter:function(l){return !(l||'').endsWith(' max');}});
+}
+
+function prjStackChartRender(){
+    var period=prjChartPeriodVal(), view=PRJ.production.views[period]; if(!view) return;
+    var vis=prjVisIndices(view, prjChartFromEl(), prjChartToEl());
+    var viewBy=prjChartViewBy(), unit=prjUnit(), ul=prjUnitLabel();
+    var prod={}; view.rows.forEach(function(r){ prod[r.label]=r.base; });
+    var leaves=prjChartProjects().filter(function(p){ return prod[p.name]; });
+    var groups=[];
+    if(viewBy==='project'){ leaves.forEach(function(p){ groups.push({label:p.name,names:[p.name]}); }); }
+    else if(viewBy==='country'){ var byC={}; leaves.forEach(function(p){ (byC[p.country]=byC[p.country]||[]).push(p.name); }); Object.keys(byC).forEach(function(c){ groups.push({label:c,names:byC[c]}); }); }
+    else { var byR={}; leaves.forEach(function(p){ (byR[p.region]=byR[p.region]||[]).push(p.name); }); PRJ.region_order.forEach(function(r){ if(byR[r]) groups.push({label:r,names:byR[r]}); }); }
+    var labels=[]; for(var k=0;k<vis.length;k++) labels.push(view.short_columns[vis[k]]||view.columns[vis[k]]);
+    var datasets=[];
+    for(var g=0;g<groups.length;g++){
+        var grp=groups[g], data=[];
+        for(var k=0;k<vis.length;k++){ var ci=vis[k], s=0; for(var nn=0;nn<grp.names.length;nn++){ var b=prod[grp.names[nn]]; if(b) s+=b[ci]; } var v=applyUnitConversion(s,unit,view.days[ci]); data.push(v<0?0:v); }
+        var color = (viewBy==='region') ? (PRJ.region_colors[grp.label]||PRJ_OWNER_COLORS[g%PRJ_OWNER_COLORS.length]) : PRJ_OWNER_COLORS[g%PRJ_OWNER_COLORS.length];
+        datasets.push({ label:grp.label, data:data, backgroundColor:fadeColor(color,0.8), borderColor:color, borderWidth:1, fill:(g===0)?'origin':'-1', stack:'prj', tension:0.2, pointRadius:0 });
+    }
+    document.getElementById('prjStackTitle').textContent='Production Build-up ('+ul+')';
+    var opts=chartOptionsStacked(unit); opts.scales.y.title.text=ul;
+    if(prjStackChart){ prjStackChart.destroy(); prjStackChart=null; }
+    var c=document.getElementById('prjStackCanvas'); if(!c) return;
+    prjStackChart=new Chart(c,{type:'line',data:{labels:labels,datasets:datasets},options:opts});
+    renderHtmlLegend(prjStackChart,'prjStackLegend',{});
+}
+
+// Supply Outlook tree expand toggles.
+document.addEventListener('click', function(e){
+    var tr=e.target.closest('tr[data-prj-ox]'); if(!tr) return;
+    var key=tr.getAttribute('data-prj-ox');
+    prjOutExpanded[key]=!prjOutExpanded[key];
+    prjOutlookRender();
+});
+
 /* === EVENTS === */
 function onPeriodChange() {
     updateRangeSelectors();
@@ -3731,6 +4619,7 @@ function onPeriodChange() {
 function onRangeChange() { updateAll(); }
 function onGrowthTypeChange() { growthType=document.getElementById('growthTypeSelector').value; updateGrowthTable(); }
 function updateAll() {
+    if (DATA.projects_tab) return;   // projects tab renders via prjRender(), not here
     if (DATA.composite) { lngUpdateAll(); return; }
     updateTableValueModeLabels();
     updateEfficiencyNote();
@@ -4080,6 +4969,102 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '    <iframe id="embedFrame" title="Palissy external dashboard" loading="lazy"></iframe>\n'
     html += '</div>\n\n'
 
+    # === LNG Projects tab: sub-tabs + filter bar + Region/Country/Project tree ===
+    html += '<div class="projects-tab-wrap" id="projectsTab">\n'
+    html += '  <div class="prj-subtabs">\n'
+    html += '    <button class="prj-subtab-btn active" id="prjSubtabOutlook" onclick="prjSetSubtab(\'outlook\')">Supply Outlook</button>\n'
+    html += '    <button class="prj-subtab-btn" id="prjSubtabProjects" onclick="prjSetSubtab(\'projects\')">Projects</button>\n'
+    html += '  </div>\n'
+    html += '  <div class="prj-filter-bar">\n'
+    html += '    <div class="prj-filter-group"><label>Unit</label><select id="prjUnit" onchange="prjOnUnitChange()"></select></div>\n'
+    for lbl, fid in [("Status", "prjFilterStatus"), ("Region", "prjFilterRegion"),
+                     ("Country", "prjFilterCountry"), ("Company", "prjFilterCompany"),
+                     ("Project", "prjFilterProject")]:
+        html += f'    <div class="prj-filter-group"><label>{lbl}</label><div class="multi-select" id="{fid}"></div></div>\n'
+    html += '    <button class="prj-filter-reset" onclick="prjResetFilters(\'table\')">Reset filters</button>\n'
+    html += '  </div>\n'
+    # Supply Outlook pane (default) — production table by region/country/project
+    html += '  <div class="prj-pane active" id="prjPaneOutlook">\n'
+    html += '    <div class="prj-outlook-controls">\n'
+    html += '      <div class="control-group"><label>View by</label>\n'
+    html += '        <select id="prjViewBy" onchange="prjOutlookRender()">\n'
+    html += '          <option value="region" selected>Region</option>\n'
+    html += '          <option value="country">Country</option>\n'
+    html += '          <option value="project">Project</option>\n'
+    html += '        </select>\n'
+    html += '      </div>\n'
+    html += '      <div class="control-group"><label>Period</label>\n'
+    html += '        <select id="prjPeriod" onchange="prjOnOutlookPeriod()">\n'
+    html += '          <option value="Monthly">Monthly</option>\n'
+    html += '          <option value="Quarterly">Quarterly</option>\n'
+    html += '          <option value="Annual CY" selected>Annual (Calendar Year)</option>\n'
+    html += '          <option value="Gas Year">Annual (Gas Year)</option>\n'
+    html += '          <option value="Winter">Winter (Oct-Mar)</option>\n'
+    html += '          <option value="Summer">Summer (Apr-Sep)</option>\n'
+    html += '        </select>\n'
+    html += '      </div>\n'
+    html += '      <div class="control-group"><label>From</label><select id="prjFrom" onchange="prjOutlookRender()"></select></div>\n'
+    html += '      <div class="control-group"><label>To</label><select id="prjTo" onchange="prjOutlookRender()"></select></div>\n'
+    html += '    </div>\n'
+    html += '    <div class="prj-table-container">\n'
+    html += '      <table class="prj-table prj-outlook-table"><thead id="prjOutlookHead"></thead><tbody id="prjOutlookBody"></tbody></table>\n'
+    html += '    </div>\n'
+    # Change table (YoY/MoM/YTD/LTM/YTD-GY + %/abs) on the production series
+    html += '    <div class="prj-change-controls">\n'
+    html += '      <span class="lng-block-title">Change in production</span>\n'
+    html += '      <div class="control-group"><label>Change</label><select id="prjChangeType" onchange="prjChangeRender()"></select></div>\n'
+    html += '      <div class="growth-toggle">\n'
+    html += '        <button id="prjChangePct" class="active" onclick="prjSetChangeMode(\'pct\')">% Change</button>\n'
+    html += '        <button id="prjChangeAbs" onclick="prjSetChangeMode(\'abs\')">Absolute</button>\n'
+    html += '      </div>\n'
+    html += '    </div>\n'
+    html += '    <div class="prj-table-container">\n'
+    html += '      <table class="prj-table prj-outlook-table"><thead id="prjChangeHead"></thead><tbody id="prjChangeBody"></tbody></table>\n'
+    html += '    </div>\n'
+    # Chart filters section: link-to-table toggle + (when unlinked) an independent filter set
+    html += '    <div class="prj-chart-filters">\n'
+    html += '      <div class="prj-chart-filters-head">\n'
+    html += '        <span class="lng-block-title">Chart filters</span>\n'
+    html += '        <button class="prj-link-btn active" id="prjLinkBtn" onclick="prjToggleLink()">✓ Linked to table filters</button>\n'
+    html += '      </div>\n'
+    html += '      <div class="prj-chart-filter-controls" id="prjChartFilterControls">\n'
+    html += '        <div class="prj-filter-group"><label>View by</label><select id="prjcViewBy" onchange="prjOutlookCharts()"></select></div>\n'
+    html += '        <div class="prj-filter-group"><label>Period</label><select id="prjcPeriod" onchange="prjcOnPeriod()"></select></div>\n'
+    html += '        <div class="prj-filter-group"><label>From</label><select id="prjcFrom" onchange="prjOutlookCharts()"></select></div>\n'
+    html += '        <div class="prj-filter-group"><label>To</label><select id="prjcTo" onchange="prjOutlookCharts()"></select></div>\n'
+    for lbl, fid in [("Status", "prjcFilterStatus"), ("Region", "prjcFilterRegion"),
+                     ("Country", "prjcFilterCountry"), ("Company", "prjcFilterCompany"),
+                     ("Project", "prjcFilterProject")]:
+        html += f'        <div class="prj-filter-group"><label>{lbl}</label><div class="multi-select" id="{fid}"></div></div>\n'
+    html += '        <button class="prj-filter-reset" onclick="prjResetFilters(\'chart\')">Reset</button>\n'
+    html += '      </div>\n'
+    html += '    </div>\n'
+    # Charts row: range (left) + stacked area (right)
+    html += '    <div class="prj-outlook-charts">\n'
+    html += '      <div class="grid-quad">\n'
+    html += '        <div class="chart-controls">\n'
+    html += '          <div class="control-group"><label>Average range</label><select id="prjRangeLookback" onchange="prjOutlookCharts()"></select></div>\n'
+    html += '        </div>\n'
+    html += '        <div class="chart-title" id="prjRangeTitle">Production Range</div>\n'
+    html += '        <div class="chart-canvas-wrap"><canvas id="prjRangeCanvas"></canvas></div>\n'
+    html += '        <div class="custom-legend" id="prjRangeLegend"></div>\n'
+    html += '      </div>\n'
+    html += '      <div class="grid-quad">\n'
+    html += '        <div class="chart-title" id="prjStackTitle">Production Build-up</div>\n'
+    html += '        <div class="chart-canvas-wrap"><canvas id="prjStackCanvas"></canvas></div>\n'
+    html += '        <div class="custom-legend" id="prjStackLegend"></div>\n'
+    html += '      </div>\n'
+    html += '    </div>\n'
+    html += '  </div>\n'
+    # Projects pane (assumptions)
+    html += '  <div class="prj-pane" id="prjPaneProjects">\n'
+    html += '    <div class="prj-summary" id="prjSummary"></div>\n'
+    html += '    <div class="prj-table-container">\n'
+    html += '      <table class="prj-table"><thead id="prjTableHead"></thead><tbody id="prjTableBody"></tbody></table>\n'
+    html += '    </div>\n'
+    html += '  </div>\n'
+    html += '</div>\n\n'
+
     html += '<div class="footer">\n'
     html += '    <span>Source: Palissy Advisors</span>\n'
     html += '    &nbsp;&bull;&nbsp;\n'
@@ -4102,6 +5087,8 @@ def main():
         print(f"\n--- Building dataset: {config['key']} ({config['title']}) ---")
         if config.get("composite"):
             blob = build_composite_blob(config)
+        elif config.get("projects_tab"):
+            blob = build_projects_blob(config)
         else:
             blob = build_dataset_blob(config)
         datasets_by_key[config["key"]] = blob
