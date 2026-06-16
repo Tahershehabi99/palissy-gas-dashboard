@@ -1647,8 +1647,13 @@ function computeGrowthCell(rowBase, days, meta, idx, vn, gt, isStock) {
         return useVol ? sumVol(rowBase,indices) : avgRate(rowBase,days,indices);
     }
     function result(cur,prev) {
-        if (prev===null||cur===null) return null;
-        if (growthMode==='pct') return prev===0?null:(cur/prev-1);
+        if (prev===null||cur===null) return null;       // no comparison period -> blank
+        if (growthMode==='pct') {
+            // prev==0: a 0 -> 0 period is genuinely 0% change (show it); 0 -> non-zero
+            // is a start-from-nothing with no finite % (leave blank).
+            if (prev===0) return cur===0 ? 0 : null;
+            return cur/prev-1;
+        }
         return cur-prev;
     }
 
