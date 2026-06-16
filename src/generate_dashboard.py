@@ -1402,6 +1402,15 @@ body.lng-composite .main-grid { display: none; }
 .lng-charts-row .grid-quad { min-width: 0; }
 @media (max-width: 1100px) { .lng-charts-row { grid-template-columns: 1fr; } }
 @media (max-width: 768px) { .lng-grid { margin: 0 8px 8px; } }
+
+/* Exports hierarchical selector: region expand arrow + collapsible members. */
+.ms-exp-arrow {
+    display: inline-block; width: 14px; flex-shrink: 0;
+    cursor: pointer; color: """ + grey + """; font-size: 10px;
+    transition: transform 0.15s ease; text-align: center;
+}
+.ms-exp-arrow.expanded { transform: rotate(90deg); }
+.ms-item.ms-exp-member { padding-left: 30px; }
 """
 
     js = r"""
@@ -3129,6 +3138,11 @@ var lngChangeMode = { imports: 'pct', exports: 'pct' };
 var lngChangeType = { imports: 'yoy', exports: 'yoy' };
 var lngStackType  = { imports: 'bar', exports: 'bar' };
 var lngStackSel   = { imports: [], exports: [] };
+// Exports use a hierarchical selector (regions expand to member countries; mixed
+// partial selections allowed). State = selected LEAF / standalone labels, kept
+// separately for the range chart and the build-up chart.
+var lngExpSelState = { range: [], stack: [] };
+var lngExpExpanded = { range: {}, stack: {} };   // region label -> expanded?
 
 function lngSubBlob(k) { return LNG.sub[k]; }
 function lngGetRow(sub, label) { var rs = sub.views.Monthly.rows; for (var i=0;i<rs.length;i++) if (rs[i].label===label) return rs[i]; return null; }
@@ -3162,17 +3176,22 @@ function lngInit() {
     lngStackType  = { imports: 'bar', exports: 'bar' };
 
     var imp = lngSubBlob('imports'), exp = lngSubBlob('exports');
-    // Range selectors: flat multiselect of series + a mutex Total (default Total).
+    // Imports: flat selectors. Range = countries + a mutex Total (default Total);
+    // build-up = All-checklist of the 12 countries.
     buildMultiSelect('msLngImpRange', imp.chart_series, imp.total_row, [imp.total_row], function(){ lngUpdateRange('imports'); });
-    buildMultiSelect('msLngExpRange', exp.chart_series, exp.total_row, [exp.total_row], function(){ lngUpdateRange('exports'); });
+    lngStackSel.imports = imp.chart_series.slice();
+    lngBuildStackSelector('imports');
+
+    // Exports: hierarchical selectors for BOTH charts. Default = every leaf
+    // selected (collapsed) -> range = Total, build-up = the 7 region totals.
+    var expLeaves = lngExpLeaves();
+    lngExpSelState = { range: expLeaves.slice(), stack: expLeaves.slice() };
+    lngExpExpanded = { range: {}, stack: {} };
+    lngBuildExpSelector('range');
+    lngBuildExpSelector('stack');
+
     lngPopulateLookback('lngImpRangeLookback', imp);
     lngPopulateLookback('lngExpRangeLookback', exp);
-
-    // Stacked: select-all checklist (default all), own from/to, chart-type toggle.
-    lngStackSel.imports = imp.chart_series.slice();
-    lngStackSel.exports = exp.chart_series.slice();
-    lngBuildStackSelector('imports');
-    lngBuildStackSelector('exports');
     lngPopulateStackRange('imports');
     lngPopulateStackRange('exports');
     lngSetStackTypeButtons('imports');
@@ -3328,8 +3347,7 @@ function lngPopulateLookback(id, sub) {
 
 function lngUpdateRange(subKey) {
     var sub = lngSubBlob(subKey), ids = lngIds(subKey);
-    var selected = getMultiSelectState(ids.rangeSel);
-    if (!selected || selected.length===0) selected = [sub.total_row];
+    var selected = lngRangeSelected(subKey);   // leaf labels (or [total_row])
     var unitKey = document.getElementById('unitSelector').value;
     var lookback = parseInt(document.getElementById(ids.lookback).value) || 5;
     var cgy = currentGY(), prevGY = cgy-1, nextGY = cgy+1;
@@ -3367,8 +3385,7 @@ function lngUpdateRange(subKey) {
     }
 
     var unitLabel = getHeaderUnitLabel(unitKey);
-    var isTotal = (selected.length===1 && selected[0]===sub.total_row);
-    var selLabel = isTotal ? 'Total' : (selected.length<=2 ? selected.join(' + ') : selected[0]+' + '+(selected.length-1)+' more');
+    var selLabel = lngRangeLabel(subKey, selected);
     document.getElementById(ids.rangeTitle).textContent = (subKey==='imports'?'Import Range':'Export Range') + ' — ' + selLabel + ' (' + unitLabel + ')';
 
     var prevLabel = 'GY '+String(prevGY).slice(-2)+'/'+String(prevGY+1).slice(-2);
@@ -3460,7 +3477,7 @@ function lngPopulateStackRange(subKey) {
 }
 function lngUpdateStack(subKey) {
     var sub = lngSubBlob(subKey), ids = lngIds(subKey);
-    var type = lngStackType[subKey], sel = lngStackSel[subKey];
+    var type = lngStackType[subKey];
     var unitKey = document.getElementById('unitSelector').value;
     var view = sub.views.Monthly;
     var fromIdx = parseInt(document.getElementById(ids.from).value), toIdx = parseInt(document.getElementById(ids.to).value);
@@ -3470,19 +3487,20 @@ function lngUpdateStack(subKey) {
     for (var i=fromIdx;i<=toIdx;i++) labels.push(view.short_columns[i] || view.columns[i]);
 
     var stacked = (type==='bar' || type==='area');
-    var series = sub.chart_series.filter(function(s){ return sel.indexOf(s)>=0; });
+    // Series descriptors: imports = selected countries; exports = region totals
+    // for fully-selected regions, else the individually-selected member countries.
+    var series = lngStackDescriptors(subKey);
     var datasets = [];
     for (var s=0;s<series.length;s++) {
-        var label = series[s], row = lngGetRow(sub, label), data = [];
+        var d = series[s], row = lngGetRow(sub, d.row), data = [];
         for (var i=fromIdx;i<=toIdx;i++) {
             var v = row ? applyUnitConversion(row.base[i], unitKey, view.days[i]) : 0;
             if (stacked && v<0) v = 0;
             data.push(v);
         }
-        var color = lngColor(sub, label);
-        var ds = { label: label, data: data, borderColor: color, pointRadius: 0, tension: 0.2 };
-        if (type==='bar') { ds.backgroundColor = color+'CC'; ds.borderWidth = 1; ds.stack = 'lng'; }
-        else if (type==='area') { ds.backgroundColor = color+'CC'; ds.borderWidth = 1; ds.stack = 'lng'; ds.fill = (s===0)?'origin':'-1'; }
+        var ds = { label: d.label, data: data, borderColor: d.color, pointRadius: 0, tension: 0.2 };
+        if (type==='bar') { ds.backgroundColor = fadeColor(d.color, 0.8); ds.borderWidth = 1; ds.stack = 'lng'; }
+        else if (type==='area') { ds.backgroundColor = fadeColor(d.color, 0.8); ds.borderWidth = 1; ds.stack = 'lng'; ds.fill = (s===0)?'origin':'-1'; }
         else { ds.backgroundColor = 'rgba(0,0,0,0)'; ds.borderWidth = 2; ds.fill = false; }
         datasets.push(ds);
     }
@@ -3497,6 +3515,186 @@ function lngUpdateStack(subKey) {
     var canvas = document.getElementById(ids.stackCanvas); if (!canvas) return;
     lngCharts[ids.stackChart] = new Chart(canvas, { type: chartType, data: {labels:labels, datasets:datasets}, options: opts });
     renderHtmlLegend(lngCharts[ids.stackChart], ids.stackLegend, {});
+}
+
+/* ---- Exports hierarchical selector (range + build-up share the widget code,
+        with separate selection/expand state per chart). Regions expand to their
+        member countries; selecting a region selects all members; partial
+        selection shows the chosen countries instead of the region total. ---- */
+function lngExpLeaves() {
+    var sub = lngSubBlob('exports'), out = [];
+    sub.hierarchy.forEach(function(h) {
+        if (h.label === sub.total_row) return;            // skip Grand total
+        if (h.children && h.children.length) h.children.forEach(function(c){ out.push(c.label); });
+        else out.push(h.label);                            // standalone (Australia, Russia)
+    });
+    return out;
+}
+function lngExpContainer(which) { return which === 'range' ? 'msLngExpRange' : 'msLngExpStack'; }
+function lngExpOnChange(which) { if (which === 'range') lngUpdateRange('exports'); else lngUpdateStack('exports'); }
+
+function lngBuildExpSelector(which) {
+    var sub = lngSubBlob('exports');
+    var container = document.getElementById(lngExpContainer(which)); if (!container) return;
+    container.innerHTML = ''; container.classList.add('multi-select');
+    var button = document.createElement('button'); button.type='button'; button.className='ms-button'; container.appendChild(button);
+    var panel = document.createElement('div'); panel.className='ms-panel'; container.appendChild(panel);
+    panel.appendChild(lngExpItem(which, 'All', 'ms-group-header', '__ALL__', null));
+    var div = document.createElement('div'); div.className='ms-divider'; panel.appendChild(div);
+    sub.hierarchy.forEach(function(h) {
+        if (h.label === sub.total_row) return;
+        if (h.children && h.children.length) {
+            panel.appendChild(lngExpGroupHeader(which, h));
+            h.children.forEach(function(c){ panel.appendChild(lngExpItem(which, c.label, 'ms-child ms-exp-member', c.label, h.label)); });
+        } else {
+            panel.appendChild(lngExpItem(which, h.label, '', h.label, null));
+        }
+    });
+    button.addEventListener('click', function(ev){ ev.stopPropagation(); container.classList.toggle('open'); });
+    lngExpRefresh(which);
+}
+function lngExpItem(which, text, extraCls, key, region) {
+    var lbl = document.createElement('label'); lbl.className = 'ms-item'+(extraCls?' '+extraCls:'');
+    if (region != null) lbl.setAttribute('data-region', region);
+    var cb = document.createElement('input'); cb.type='checkbox'; cb.setAttribute('data-key', key);
+    var sp = document.createElement('span'); sp.textContent = text;
+    lbl.appendChild(cb); lbl.appendChild(sp);
+    cb.addEventListener('change', function(){ lngExpItemClick(which, key, region); });
+    return lbl;
+}
+function lngExpGroupHeader(which, h) {
+    var lbl = document.createElement('label'); lbl.className = 'ms-item ms-group-header';
+    var arrow = document.createElement('span'); arrow.className='ms-exp-arrow'; arrow.textContent='▸';
+    arrow.setAttribute('data-region-arrow', h.label);
+    var cb = document.createElement('input'); cb.type='checkbox'; cb.setAttribute('data-key', '__grp__'+h.label);
+    var sp = document.createElement('span'); sp.textContent = h.label;
+    lbl.appendChild(arrow); lbl.appendChild(cb); lbl.appendChild(sp);
+    arrow.addEventListener('click', function(ev){ ev.preventDefault(); ev.stopPropagation(); lngExpToggleExpand(which, h.label); });
+    cb.addEventListener('change', function(){ lngExpClickGroup(which, h); });
+    return lbl;
+}
+function lngExpItemClick(which, key, region) {
+    if (key === '__ALL__') { lngExpClickAll(which); }
+    else { lngToggleArr(lngExpSelState[which], key); if (region != null) lngExpExpanded[which][region] = true; }
+    lngExpRefresh(which); lngExpOnChange(which);
+}
+function lngExpClickGroup(which, h) {
+    var members = h.children.map(function(c){ return c.label; });
+    var sel = lngExpSelState[which];
+    var allIn = members.every(function(m){ return sel.indexOf(m)>=0; });
+    if (allIn) {
+        lngExpSelState[which] = sel.filter(function(m){ return members.indexOf(m)<0; });
+        lngExpExpanded[which][h.label] = false;          // collapse on full deselect
+    } else {
+        members.forEach(function(m){ if (sel.indexOf(m)<0) sel.push(m); });
+        lngExpExpanded[which][h.label] = true;           // auto-expand to show members
+    }
+    lngExpRefresh(which); lngExpOnChange(which);
+}
+function lngExpClickAll(which) {
+    var leaves = lngExpLeaves(), sel = lngExpSelState[which];
+    var allIn = leaves.every(function(l){ return sel.indexOf(l)>=0; });
+    if (allIn) { lngExpSelState[which] = []; lngExpExpanded[which] = {}; }
+    else { lngExpSelState[which] = leaves.slice(); }
+}
+function lngExpToggleExpand(which, region) { lngExpExpanded[which][region] = !lngExpExpanded[which][region]; lngExpRefresh(which); }
+function lngExpSetCb(containerId, key, checked, indet) {
+    var cb = document.querySelector('#'+containerId+' input[data-key="'+CSS.escape(key)+'"]');
+    if (!cb) return; cb.checked = !!checked; cb.indeterminate = !!indet;
+}
+function lngExpRefresh(which) {
+    var sub = lngSubBlob('exports'), containerId = lngExpContainer(which);
+    var sel = lngExpSelState[which], leaves = lngExpLeaves();
+    var nAll = leaves.filter(function(l){ return sel.indexOf(l)>=0; }).length;
+    lngExpSetCb(containerId, '__ALL__', nAll===leaves.length, nAll>0 && nAll<leaves.length);
+    sub.hierarchy.forEach(function(h) {
+        if (h.label === sub.total_row) return;
+        if (h.children && h.children.length) {
+            var members = h.children.map(function(c){ return c.label; });
+            var n = members.filter(function(m){ return sel.indexOf(m)>=0; }).length;
+            lngExpSetCb(containerId, '__grp__'+h.label, n===members.length, n>0 && n<members.length);
+            for (var j=0;j<members.length;j++) lngExpSetCb(containerId, members[j], sel.indexOf(members[j])>=0, false);
+            var expanded = !!lngExpExpanded[which][h.label];
+            var rows = document.querySelectorAll('#'+containerId+' [data-region="'+CSS.escape(h.label)+'"]');
+            for (var r=0;r<rows.length;r++) rows[r].style.display = expanded ? '' : 'none';
+            var arrow = document.querySelector('#'+containerId+' [data-region-arrow="'+CSS.escape(h.label)+'"]');
+            if (arrow) arrow.className = 'ms-exp-arrow'+(expanded?' expanded':'');
+        } else {
+            lngExpSetCb(containerId, h.label, sel.indexOf(h.label)>=0, false);
+        }
+    });
+    lngExpBtnLabel(which);
+}
+function lngExpBtnLabel(which) {
+    var c = document.getElementById(lngExpContainer(which)); if (!c) return;
+    var btn = c.querySelector('.ms-button'); if (!btn) return;
+    var leaves = lngExpLeaves(), sel = lngExpSelState[which];
+    if (sel.length >= leaves.length) { btn.textContent = 'All'; btn.title = ''; return; }
+    if (sel.length === 0) { btn.textContent = 'None'; btn.title = ''; return; }
+    btn.textContent = (sel.length<=2) ? sel.join(' + ') : sel.length+' selected';
+    btn.title = sel.join(', ');
+}
+
+/* Resolve export selections to chart series.
+   Build-up: a fully-selected region -> one region-total series; a partially
+   selected region -> one series per selected member country; standalones as-is. */
+function lngExpStackSeries() {
+    var sub = lngSubBlob('exports'), sel = lngExpSelState.stack, out = [];
+    sub.hierarchy.forEach(function(h) {
+        if (h.label === sub.total_row) return;
+        if (h.children && h.children.length) {
+            var selM = h.children.filter(function(c){ return sel.indexOf(c.label)>=0; }).map(function(c){ return c.label; });
+            if (selM.length === 0) return;
+            if (selM.length === h.children.length) out.push({ label: h.label, row: h.label, color: lngColor(sub, h.label) });
+            else selM.forEach(function(m){ out.push({ label: m, row: m, color: lngExpMemberColor(h.label, m) }); });
+        } else if (sel.indexOf(h.label) >= 0) {
+            out.push({ label: h.label, row: h.label, color: lngColor(sub, h.label) });
+        }
+    });
+    return out;
+}
+function lngStackDescriptors(subKey) {
+    if (subKey === 'exports') return lngExpStackSeries();
+    var sub = lngSubBlob('imports'), sel = lngStackSel.imports;
+    return sub.chart_series.filter(function(s){ return sel.indexOf(s)>=0; })
+        .map(function(s){ return { label: s, row: s, color: lngColor(sub, s) }; });
+}
+function lngRangeSelected(subKey) {
+    if (subKey === 'exports') {
+        var s = lngExpSelState.range;
+        return (s && s.length) ? s.slice() : [lngSubBlob('exports').total_row];
+    }
+    var st = getMultiSelectState('msLngImpRange');
+    return (st && st.length) ? st : [lngSubBlob('imports').total_row];
+}
+function lngRangeLabel(subKey, selected) {
+    if (subKey === 'exports') {
+        var all = lngExpLeaves();
+        if (selected.length >= all.length || selected.length === 0) return 'Total';
+        return selected.length<=2 ? selected.join(' + ') : selected.length+' selected';
+    }
+    var sub = lngSubBlob('imports');
+    if (selected.length===1 && selected[0]===sub.total_row) return 'Total';
+    return selected.length<=2 ? selected.join(' + ') : selected[0]+' + '+(selected.length-1)+' more';
+}
+/* Member-country color: a lightness-shifted shade of the parent region color,
+   so a drilled region's countries stay visually related in the stack. */
+function lngExpMemberColor(region, member) {
+    var sub = lngSubBlob('exports');
+    var h = null; for (var i=0;i<sub.hierarchy.length;i++) if (sub.hierarchy[i].label===region) { h = sub.hierarchy[i]; break; }
+    if (!h) return lngColor(sub, region);
+    var idx = 0, n = h.children.length;
+    for (var j=0;j<n;j++) if (h.children[j].label===member) { idx = j; break; }
+    var t = (n>1) ? (idx/(n-1)) : 0.5;
+    return lngShade(lngColor(sub, region), -0.28 + t*0.62);   // darken -> lighten across members
+}
+function lngShade(color, amt) {   // amt in [-1,1]: <0 darken, >0 lighten
+    var hex = String(color).replace('#','');
+    if (hex.length === 3) hex = hex.split('').map(function(c){ return c+c; }).join('');
+    if (hex.length < 6) return color;
+    var r = parseInt(hex.slice(0,2),16), g = parseInt(hex.slice(2,4),16), b = parseInt(hex.slice(4,6),16);
+    function adj(v) { return amt>=0 ? Math.round(v+(255-v)*amt) : Math.round(v*(1+amt)); }
+    return 'rgb('+adj(r)+','+adj(g)+','+adj(b)+')';
 }
 
 /* LNG table expand/collapse toggles (value + change tables share expand state). */
@@ -3854,7 +4052,9 @@ document.addEventListener('DOMContentLoaded', function() {
         html += '          <div class="value-toggle">\n'
         html += f'            <button id="btn{pre}Stack-bar" class="active" onclick="lngSetStackType(\'{side}\',\'bar\')">Stacked Bar</button>\n'
         html += f'            <button id="btn{pre}Stack-area" onclick="lngSetStackType(\'{side}\',\'area\')">Stacked Area</button>\n'
-        html += f'            <button id="btn{pre}Stack-line" onclick="lngSetStackType(\'{side}\',\'line\')">Line</button>\n'
+        # Exports build-up: Bar/Area only (Line dropped per spec). Imports keeps Line.
+        if side == "imports":
+            html += f'            <button id="btn{pre}Stack-line" onclick="lngSetStackType(\'{side}\',\'line\')">Line</button>\n'
         html += '          </div>\n'
         html += '        </div>\n'
         html += f'        <div class="control-group"><label>Series</label><div class="multi-select" id="msLng{pre[3:]}Stack"></div></div>\n'
