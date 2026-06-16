@@ -28,6 +28,7 @@ DISPLAY_END_YEAR = 2030
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 INPUT_FILE = os.path.join(PROJECT_DIR, "INPUT", "gas_model_input.xlsx")
+LNG_INPUT_FILE = os.path.join(PROJECT_DIR, "INPUT", "lng_model_input.xlsx")
 OUTPUT_DIR = os.path.join(PROJECT_DIR, "output")
 OUTPUT_FILE = os.path.join(OUTPUT_DIR, "index.html")
 LOGO_FILE = os.path.join(PROJECT_DIR, "Context", "Palissy Logo.png")
@@ -119,6 +120,134 @@ GAS_SERIES_COLORS = {
     "Storage percentage":          "#272962",  # Palissy dark blue (line)
 }
 
+# ============================================================
+# LNG (Global LNG tab) — base unit is MMT.
+# Conversions reuse the verified gas factors, re-based to MMT:
+#   1 mmt = 48 bcf ; 1 bcm = 35.3 bcf ; 1 TWh = 3.41 bcf.
+# So from a base of mmt: bcf = x48, bcm = x(48/35.3), TWh = x(48/3.41),
+# kt/d = mmt/day x1000 (1 mmt = 1000 kt).
+# ============================================================
+LNG_UNIT_CONFIG = {
+    "mmt":    {"volLabel": "mmt", "rateLabel": "kt/d",   "volFactor": 1.0,          "rateFactor": 1000.0,             "isRate": False},
+    "kt/d":   {"volLabel": "mmt", "rateLabel": "kt/d",   "volFactor": 1.0,          "rateFactor": 1000.0,             "isRate": True},
+    "bcf":    {"volLabel": "bcf", "rateLabel": "bcf/d",  "volFactor": 48.0,         "rateFactor": 48.0,               "isRate": False},
+    "bcf/d":  {"volLabel": "bcf", "rateLabel": "bcf/d",  "volFactor": 48.0,         "rateFactor": 48.0,               "isRate": True},
+    "bcm":    {"volLabel": "bcm", "rateLabel": "mmcm/d", "volFactor": 48.0/35.3,    "rateFactor": 48.0/35.3*1000.0,   "isRate": False},
+    "mmcm/d": {"volLabel": "bcm", "rateLabel": "mmcm/d", "volFactor": 48.0/35.3,    "rateFactor": 48.0/35.3*1000.0,   "isRate": True},
+    "TWh":    {"volLabel": "TWh", "rateLabel": "GWh/d",  "volFactor": 48.0/3.41,    "rateFactor": 48.0/3.41*1000.0,   "isRate": False},
+    "GWh/d":  {"volLabel": "TWh", "rateLabel": "GWh/d",  "volFactor": 48.0/3.41,    "rateFactor": 48.0/3.41*1000.0,   "isRate": True},
+}
+LNG_UNITS = ["mmt", "kt/d", "bcf", "bcf/d", "bcm", "mmcm/d", "TWh", "GWh/d"]
+
+# Import-country colors (stack layers / range lines). Placeholder palette —
+# tweak with user. Keyed by exact row labels in the Monthly Imports tab.
+LNG_IMPORT_COLORS = {
+    "EU+UK":        "#272962",  # Palissy dark blue
+    "China":        "#C00000",  # Palissy red
+    "Japan":        "#0B5AAB",  # Palissy light blue
+    "South Korea":  "#539648",  # Palissy light green
+    "Taiwan":       "#E5B83A",  # gold
+    "India":        "#8E44AD",  # purple
+    "Other Asia":   "#258EEB",  # bright blue
+    "LatAm":        "#0C5B19",  # dark green
+    "Middle East":  "#92591C",  # earth brown
+    "Egypt":        "#2A9D8F",  # teal
+    "Turkey":       "#708B5A",  # olive
+    "RoW":          "#9395A2",  # Palissy grey
+    "Unaccounted demand": "#B8B9C2",
+    "Total":        "#272962",
+}
+
+# Export-region colors. Keyed by the regional subtotal / standalone labels.
+LNG_EXPORT_COLORS = {
+    "Asia":                "#272962",  # Palissy dark blue
+    "Australia":           "#258EEB",  # bright blue
+    "LatAm":               "#0C5B19",  # dark green
+    "MENA and Europe":     "#C00000",  # Palissy red
+    "North America":       "#E5B83A",  # gold
+    "Russia":              "#9395A2",  # Palissy grey
+    "Sub-Saharan Africa":  "#539648",  # Palissy light green
+    "Grand total":         "#272962",
+}
+
+# --- LNG sub-datasets (the Imports + Exports halves of the Global LNG tab) ---
+# Each is read like any other dataset, but they share one composite tab.
+LNG_IMPORTS_CFG = {
+    "key": "lng_imports",
+    "tab_label": "Imports",
+    "title": "LNG Imports",
+    "input_file": "lng",                 # use INPUT/lng_model_input.xlsx
+    "sheet": "Monthly Imports",
+    "date_row": 4,
+    "days_row": None,                    # no days row -> derive from month dates
+    "data_start_row": 7,                 # EU+UK (row 5 'Regional', row 6 'MMT' are headers)
+    "data_end_row": 20,                  # ... Total
+    "data_start_col": 3,                 # data begins at column C
+    "base_unit": "mmt",
+    "units": LNG_UNITS,
+    "default_unit": "mmt",
+    "unit_config": LNG_UNIT_CONFIG,
+    "stock_rows": [],
+    "pct_rows": [],
+    "use_hierarchy": False,              # flat list of countries + Total
+    "skip_label_rows": ["Regional", "MMT"],
+    "total_row": "Total",
+    "source_colors": LNG_IMPORT_COLORS,
+    # Charts: flat country list. Range = multiselect (countries + Total, mutex).
+    # Stacked series = the 12 countries (Unaccounted/Total excluded).
+    "range_kind": "flat",
+    "chart_series": ["EU+UK", "China", "Japan", "South Korea", "Taiwan", "India",
+                     "Other Asia", "LatAm", "Middle East", "Egypt", "Turkey", "RoW"],
+    # 'unaccounted_row' marks the actual-vs-forecast boundary: the last month
+    # where this row is EMPTY is the latest month with real data.
+    "unaccounted_row": "Unaccounted demand",
+}
+LNG_EXPORTS_CFG = {
+    "key": "lng_exports",
+    "tab_label": "Exports",
+    "title": "LNG Exports",
+    "input_file": "lng",
+    "sheet": "Monthly Exports",
+    "date_row": 4,
+    "days_row": None,
+    "data_start_row": 8,                 # 'Production (mmt)' header skipped
+    "data_end_row": 44,                  # ... Grand total
+    "data_start_col": 6,                 # data begins at column F (B-E are 'Working' cols)
+    "base_unit": "mmt",
+    "units": LNG_UNITS,
+    "default_unit": "mmt",
+    "unit_config": LNG_UNIT_CONFIG,
+    "stock_rows": [],
+    "pct_rows": [],
+    "use_hierarchy": False,
+    "skip_label_rows": ["Production (mmt)"],
+    "total_row": "Grand total",
+    "source_colors": LNG_EXPORT_COLORS,
+    # Exports table is hierarchical: regional subtotal rows with member countries
+    # above them in the sheet. We declare the structure explicitly (the sheet has
+    # no +/- prefixes). Parent rows reuse the sheet's subtotal values.
+    "explicit_hierarchy": [
+        {"type": "group", "label": "Asia",
+         "members": ["Brunei", "Indonesia", "Malaysia", "Papua New Guinea", "Timor Leste"]},
+        {"type": "standalone", "label": "Australia"},
+        {"type": "group", "label": "LatAm",
+         "members": ["Argentina", "Mexico", "Peru", "Suriname", "Trinidad", "Venezuela"]},
+        {"type": "group", "label": "MENA and Europe",
+         "members": ["Algeria", "Egypt", "Israel", "Mauritania", "Norway", "Oman", "Qatar", "UAE"]},
+        {"type": "group", "label": "North America",
+         "members": ["Canada", "United States"]},
+        {"type": "standalone", "label": "Russia"},
+        {"type": "group", "label": "Sub-Saharan Africa",
+         "members": ["Angola", "Cameroon", "Congo (Rep.)", "Equatorial Guinea",
+                     "Mozambique", "Nigeria", "Tanzania"]},
+        {"type": "standalone", "label": "Grand total"},
+    ],
+    "range_kind": "hierarchical",
+    # Stacked series = top-level regions (subtotals + standalones), not Grand total.
+    "chart_series": ["Asia", "Australia", "LatAm", "MENA and Europe",
+                     "North America", "Russia", "Sub-Saharan Africa"],
+}
+
 DATASETS = [
     {
         "key": "gas",
@@ -195,6 +324,23 @@ DATASETS = [
         # contributor sits at the top of the table / bottom of the stack.
         "sort_by_year": 2025,
     },
+    {
+        # Global LNG: a COMPOSITE tab. Unlike gas/power (one table + 2 charts) it
+        # stacks four full-width tables (Imports, Imports change, Exports, Exports
+        # change) then two rows of side-by-side charts (Import/Export range, then
+        # Import/Export stacked). Built from two sub-datasets sharing the top
+        # Period/Unit/From/To bar. See build_composite_blob + the lng* JS block.
+        "key": "global_lng",
+        "tab_label": "Global LNG",
+        "title": "Global LNG",
+        "composite": True,
+        "subs": [LNG_IMPORTS_CFG, LNG_EXPORTS_CFG],
+        # Top-bar unit machinery reads these off the composite blob directly.
+        "base_unit": "mmt",
+        "units": LNG_UNITS,
+        "default_unit": "mmt",
+        "unit_config": LNG_UNIT_CONFIG,
+    },
 ]
 
 # ============================================================
@@ -223,18 +369,20 @@ def read_dataset(wb, config):
     ws = wb[sheet_name]
 
     date_row = config["date_row"]
-    days_row = config["days_row"]
+    days_row = config.get("days_row")
     data_start_row = config["data_start_row"]
+    data_start_col = config.get("data_start_col", 2)   # first data column
+    data_end_row = config.get("data_end_row")          # optional hard stop
 
     # Detect last column with a date in the date_row
     last_col = 1
-    for c in range(2, ws.max_column + 1):
+    for c in range(data_start_col, ws.max_column + 1):
         if ws.cell(row=date_row, column=c).value is not None:
             last_col = c
 
     # Dates
     dates = []
-    for c in range(2, last_col + 1):
+    for c in range(data_start_col, last_col + 1):
         v = ws.cell(row=date_row, column=c).value
         if isinstance(v, datetime):
             dates.append(v)
@@ -243,11 +391,16 @@ def read_dataset(wb, config):
         else:
             dates.append(None)
 
-    # Days
+    # Days: read from days_row if configured, otherwise derive from the month
+    # dates (calendar days in that month). LNG inputs have no days row.
     days_per_month = []
-    for c in range(2, last_col + 1):
-        v = ws.cell(row=days_row, column=c).value
-        days_per_month.append(int(v) if v is not None else 30)
+    for ci, c in enumerate(range(data_start_col, last_col + 1)):
+        if days_row is not None:
+            v = ws.cell(row=days_row, column=c).value
+            days_per_month.append(int(v) if v is not None else 30)
+        else:
+            d = dates[ci]
+            days_per_month.append(monthrange(d.year, d.month)[1] if d is not None else 30)
 
     # Data rows
     skip = set(config.get("skip_label_rows", []))
@@ -255,6 +408,8 @@ def read_dataset(wb, config):
     r = data_start_row
     blank_streak = 0
     while r <= ws.max_row and blank_streak < 3:
+        if data_end_row is not None and r > data_end_row:
+            break
         label = ws.cell(row=r, column=1).value
         if label is None:
             blank_streak += 1
@@ -266,7 +421,7 @@ def read_dataset(wb, config):
             r += 1
             continue
         values = []
-        for c in range(2, last_col + 1):
+        for c in range(data_start_col, last_col + 1):
             v = ws.cell(row=r, column=c).value
             values.append(float(v) if v is not None else 0.0)
         # If no numeric values at all (e.g. orphan label), skip
@@ -466,9 +621,44 @@ def compute_period_values(rows, period_cols, stock_rows, pct_rows):
 # ============================================================
 # DATASET BUILDER
 # ============================================================
+def build_explicit_hierarchy(rows, spec):
+    """Build a hierarchy from an explicit config spec (used by LNG exports,
+    whose sheet has regional subtotal rows with no +/- prefixes).
+
+    spec entries:
+      {"type":"group","label":"Asia","members":[...]} -> parent row + children
+      {"type":"standalone","label":"Australia"}        -> standalone row
+    Labels are matched to the loaded rows by label; the parent row reuses the
+    sheet's subtotal values.
+    """
+    idx_by_label = {}
+    for i, r in enumerate(rows):
+        idx_by_label.setdefault(r["label"], i)
+    hierarchy = []
+    for entry in spec:
+        label = entry["label"]
+        if label not in idx_by_label:
+            print(f"  WARNING: explicit hierarchy label not found in data: {label!r}")
+            continue
+        if entry["type"] == "group":
+            children = []
+            for m in entry.get("members", []):
+                if m in idx_by_label:
+                    children.append({"label": m, "row_index": idx_by_label[m]})
+                else:
+                    print(f"  WARNING: hierarchy member not found: {m!r}")
+            hierarchy.append({"label": label, "row_index": idx_by_label[label],
+                              "children": children, "type": "parent"})
+        else:
+            hierarchy.append({"label": label, "row_index": idx_by_label[label],
+                              "children": [], "type": "standalone"})
+    return hierarchy
+
+
 def build_dataset_blob(config):
     """Load + aggregate one dataset and produce its JSON-ready blob."""
-    wb = openpyxl.load_workbook(INPUT_FILE, data_only=True)
+    src_file = LNG_INPUT_FILE if config.get("input_file") == "lng" else INPUT_FILE
+    wb = openpyxl.load_workbook(src_file, data_only=True)
     try:
         dates, days, rows = read_dataset(wb, config)
     finally:
@@ -491,7 +681,10 @@ def build_dataset_blob(config):
         for r in sortable:
             print(f"    {r['label']}: {row_year_sum(r):,.1f}")
 
-    hierarchy = detect_hierarchy(rows, config["stock_rows"], config["use_hierarchy"])
+    if config.get("explicit_hierarchy"):
+        hierarchy = build_explicit_hierarchy(rows, config["explicit_hierarchy"])
+    else:
+        hierarchy = detect_hierarchy(rows, config["stock_rows"], config["use_hierarchy"])
     print(f"  Hierarchy: {len(hierarchy)} items, {sum(1 for h in hierarchy if h['children']) } with children")
 
     period_results = aggregate_monthly_to_periods(dates, days)
@@ -559,6 +752,97 @@ def build_dataset_blob(config):
         "hierarchy": ui_hierarchy,
         "selectable_start": DISPLAY_START_YEAR,
         "selectable_end": DISPLAY_END_YEAR,
+        # LNG composite metadata (ignored by gas/power).
+        "range_kind": config.get("range_kind"),
+        "chart_series": config.get("chart_series"),
+    }
+
+
+def detect_latest_actual(config):
+    """Find the latest month with real data.
+
+    The Monthly Imports tab leaves the 'Unaccounted demand' row EMPTY for actual
+    months and populates it for forecast months. So the latest actual month is
+    the month just before the first non-empty Unaccounted demand cell.
+    Returns {"year","month","index"} where index is the 0-based monthly index,
+    or None if the marker row can't be found.
+    """
+    marker = config.get("unaccounted_row")
+    if not marker:
+        return None
+    wb = openpyxl.load_workbook(LNG_INPUT_FILE, data_only=True)
+    try:
+        ws = wb[config["sheet"]]
+        date_row = config["date_row"]
+        start_col = config.get("data_start_col", 2)
+        # last data column = last date in date_row
+        last_col = start_col
+        for c in range(start_col, ws.max_column + 1):
+            if ws.cell(row=date_row, column=c).value is not None:
+                last_col = c
+        # find marker row
+        marker_row = None
+        for r in range(config["data_start_row"], (config.get("data_end_row") or ws.max_row) + 1):
+            if str(ws.cell(row=r, column=1).value or "").strip() == marker:
+                marker_row = r
+                break
+        if marker_row is None:
+            return None
+        first_forecast = None
+        for ci, c in enumerate(range(start_col, last_col + 1)):
+            if ws.cell(row=marker_row, column=c).value is not None:
+                first_forecast = ci
+                break
+        if first_forecast is None or first_forecast == 0:
+            return None
+        idx = first_forecast - 1
+        d = ws.cell(row=date_row, column=start_col + idx).value
+        return {"year": d.year, "month": d.month, "index": idx}
+    finally:
+        wb.close()
+
+
+def build_composite_blob(config):
+    """Build a composite tab (Global LNG): multiple sub-datasets sharing one tab
+    and the top Period/Unit/From/To bar."""
+    subs = {}
+    sub_order = []
+    for sub_cfg in config["subs"]:
+        print(f"\n--- Building LNG sub-dataset: {sub_cfg['key']} ({sub_cfg['title']}) ---")
+        # Short panel key the JS uses: lng_imports -> imports, lng_exports -> exports.
+        panel = sub_cfg["key"].replace("lng_", "")
+        subs[panel] = build_dataset_blob(sub_cfg)
+        sub_order.append(panel)
+
+    # Latest actual month (from the imports Unaccounted demand row) drives chart
+    # defaults: range chart current line caps here; stacked default window is
+    # Jan 2025 -> this month + 8.
+    latest_actual = None
+    for sub_cfg in config["subs"]:
+        if sub_cfg.get("unaccounted_row"):
+            latest_actual = detect_latest_actual(sub_cfg)
+            break
+    if latest_actual:
+        print(f"  Latest actual month: {latest_actual['year']}-{latest_actual['month']:02d} (index {latest_actual['index']})")
+    else:
+        print("  WARNING: latest actual month not detected; charts will fall back to display range")
+
+    shared_views = subs[sub_order[0]]["views"]   # imports + exports share the date axis
+    return {
+        "key": config["key"],
+        "tab_label": config["tab_label"],
+        "title": config["title"],
+        "composite": True,
+        "base_unit": config["base_unit"],
+        "units": config["units"],
+        "default_unit": config["default_unit"],
+        "unit_config": config["unit_config"],
+        "selectable_start": DISPLAY_START_YEAR,
+        "selectable_end": DISPLAY_END_YEAR,
+        "views": shared_views,            # for the shared top From/To + period note
+        "latest_actual": latest_actual,
+        "sub_order": sub_order,
+        "sub": subs,
     }
 
 
@@ -1097,6 +1381,27 @@ body.dataset-gas   .buildup-controls-gas   { display: flex; }
     .chart-canvas-wrap { min-height: 280px; padding: 8px; }
     .chart-title { font-size: 10px; padding: 6px 10px 3px; }
 }
+
+/* ============================================================
+   Global LNG composite tab: 4 full-width tables stacked, then two
+   rows of side-by-side charts (range, then build-up). Shown only when
+   body.lng-composite; hides the single-table main-grid.
+   ============================================================ */
+.lng-grid { display: none; margin: 0 20px 12px; }
+body.lng-composite .lng-grid { display: flex; flex-direction: column; gap: 16px; }
+body.lng-composite .main-grid { display: none; }
+.lng-block { display: flex; flex-direction: column; min-width: 0; }
+.lng-block-title {
+    font-size: 12px; font-weight: bold; color: """ + db + """;
+    text-transform: uppercase; letter-spacing: 0.5px; padding: 2px 2px 6px;
+}
+.lng-grid .growth-controls .lng-block-title { padding: 0; margin-right: auto; }
+.lng-grid .table-container { max-height: 340px; }
+.lng-grid .growth-table-container { max-height: 320px; margin-bottom: 0; }
+.lng-charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.lng-charts-row .grid-quad { min-width: 0; }
+@media (max-width: 1100px) { .lng-charts-row { grid-template-columns: 1fr; } }
+@media (max-width: 768px) { .lng-grid { margin: 0 8px 8px; } }
 """
 
     js = r"""
@@ -1449,6 +1754,7 @@ function updateDatasetUI() {
     document.getElementById('pageTitle').textContent = DATA.title;
     document.title = 'Palissy Advisors - ' + DATA.title;
     var bodyCls = 'dataset-' + currentKey;
+    if (DATA.composite) bodyCls += ' lng-composite';
     if (DATA.chart_area) bodyCls += ' charts-area';
     if (DATA.has_range) bodyCls += ' has-range';
     if (DATA.has_buildup) bodyCls += ' has-buildup';
@@ -1472,7 +1778,9 @@ function switchDataset(key) {
     updateRangeSelectors();
     updateGrowthTypeSelector();
     updatePeriodNote();
-    if (DATA.charts_enabled) {
+    if (DATA.composite) {
+        lngInit();   // builds selectors + renders all 4 tables and 4 charts
+    } else if (DATA.charts_enabled) {
         rebuildChartControls();
         updateAll();
         updateCharts();
@@ -2806,6 +3114,410 @@ function updateGasCharts() {
     updateGasBuildupChart();
 }
 
+/* ============================================================
+   GLOBAL LNG — composite tab (4 stacked tables + 2x2 charts).
+   Self-contained: never touches the single-DATA gas/power path. Reuses the
+   pure helpers (formatNum, formatGrowth, computeGrowthCell, computeDisplayValue,
+   applyUnitConversion, chartOptionsLine/Stacked, renderHtmlLegend, gyMonth*).
+   Tables/change tables follow the top Period/Unit/From/To bar; each chart has
+   its own controls. Base unit MMT.
+   ============================================================ */
+var LNG = null;
+var lngCharts = { impRange: null, expRange: null, impStack: null, expStack: null };
+var lngExpanded = { imports: {}, exports: {} };
+var lngChangeMode = { imports: 'pct', exports: 'pct' };
+var lngChangeType = { imports: 'yoy', exports: 'yoy' };
+var lngStackType  = { imports: 'bar', exports: 'bar' };
+var lngStackSel   = { imports: [], exports: [] };
+
+function lngSubBlob(k) { return LNG.sub[k]; }
+function lngGetRow(sub, label) { var rs = sub.views.Monthly.rows; for (var i=0;i<rs.length;i++) if (rs[i].label===label) return rs[i]; return null; }
+function lngSumAt(sub, labels, idx) { var s=0; for (var i=0;i<labels.length;i++){ var r=lngGetRow(sub,labels[i]); if (r && idx>=0 && idx<r.base.length) s+=r.base[idx]; } return s; }
+function lngFindMonthlyIdx(sub, y, m) { var meta=sub.views.Monthly.col_meta; for (var i=0;i<meta.length;i++) if (meta[i].year===y && meta[i].month===m) return i; return -1; }
+function lngColor(sub, label) { return sub.source_colors[label] || '#888'; }
+function lngToggleArr(arr, v) { var p=arr.indexOf(v); if (p>=0) arr.splice(p,1); else arr.push(v); }
+function lngIds(subKey) {
+    return subKey === 'imports'
+        ? { th:'lngImpHead', tb:'lngImpBody', cth:'lngImpChHead', ctb:'lngImpChBody',
+            rangeSel:'msLngImpRange', lookback:'lngImpRangeLookback', rangeCanvas:'lngImpRangeCanvas',
+            rangeTitle:'lngImpRangeTitle', rangeLegend:'lngImpRangeLegend', rangeChart:'impRange',
+            stackSel:'msLngImpStack', from:'lngImpStackFrom', to:'lngImpStackTo', stackCanvas:'lngImpStackCanvas',
+            stackTitle:'lngImpStackTitle', stackLegend:'lngImpStackLegend', stackChart:'impStack', stackBtn:'lngImpStack',
+            changeType:'lngImpChangeType', modePct:'lngImpModePct', modeAbs:'lngImpModeAbs' }
+        : { th:'lngExpHead', tb:'lngExpBody', cth:'lngExpChHead', ctb:'lngExpChBody',
+            rangeSel:'msLngExpRange', lookback:'lngExpRangeLookback', rangeCanvas:'lngExpRangeCanvas',
+            rangeTitle:'lngExpRangeTitle', rangeLegend:'lngExpRangeLegend', rangeChart:'expRange',
+            stackSel:'msLngExpStack', from:'lngExpStackFrom', to:'lngExpStackTo', stackCanvas:'lngExpStackCanvas',
+            stackTitle:'lngExpStackTitle', stackLegend:'lngExpStackLegend', stackChart:'expStack', stackBtn:'lngExpStack',
+            changeType:'lngExpChangeType', modePct:'lngExpModePct', modeAbs:'lngExpModeAbs' };
+}
+
+function lngInit() {
+    LNG = DATA;
+    var k;
+    for (k in lngCharts) { if (lngCharts[k]) { lngCharts[k].destroy(); lngCharts[k] = null; } }
+    lngExpanded = { imports: {}, exports: {} };
+    lngChangeMode = { imports: 'pct', exports: 'pct' };
+    lngChangeType = { imports: 'yoy', exports: 'yoy' };
+    lngStackType  = { imports: 'bar', exports: 'bar' };
+
+    var imp = lngSubBlob('imports'), exp = lngSubBlob('exports');
+    // Range selectors: flat multiselect of series + a mutex Total (default Total).
+    buildMultiSelect('msLngImpRange', imp.chart_series, imp.total_row, [imp.total_row], function(){ lngUpdateRange('imports'); });
+    buildMultiSelect('msLngExpRange', exp.chart_series, exp.total_row, [exp.total_row], function(){ lngUpdateRange('exports'); });
+    lngPopulateLookback('lngImpRangeLookback', imp);
+    lngPopulateLookback('lngExpRangeLookback', exp);
+
+    // Stacked: select-all checklist (default all), own from/to, chart-type toggle.
+    lngStackSel.imports = imp.chart_series.slice();
+    lngStackSel.exports = exp.chart_series.slice();
+    lngBuildStackSelector('imports');
+    lngBuildStackSelector('exports');
+    lngPopulateStackRange('imports');
+    lngPopulateStackRange('exports');
+    lngSetStackTypeButtons('imports');
+    lngSetStackTypeButtons('exports');
+
+    lngSyncChangeTypeSelectors();
+    lngSetModeButtons('imports');
+    lngSetModeButtons('exports');
+    lngUpdateAll();
+}
+
+function lngUpdateAll() {
+    if (!LNG) return;
+    lngSyncChangeTypeSelectors();
+    lngRenderTable('imports');
+    lngRenderTable('exports');
+    lngRenderChange('imports');
+    lngRenderChange('exports');
+    lngUpdateRange('imports');
+    lngUpdateRange('exports');
+    lngUpdateStack('imports');
+    lngUpdateStack('exports');
+}
+
+/* ---- Tables ---- */
+function lngRenderTable(subKey) {
+    var sub = lngSubBlob(subKey), ids = lngIds(subKey);
+    var period = document.getElementById('periodSelector').value;
+    var unitKey = document.getElementById('unitSelector').value;
+    var view = sub.views[period]; if (!view) return;
+    var vis = getVisibleIndices(), days = view.days, rows = view.rows, hierarchy = sub.hierarchy;
+    var unitLabel = getHeaderUnitLabel(unitKey);
+
+    var hHtml = '<tr><th>'+unitLabel+'<span class="unit-label">('+period+')</span></th>';
+    for (var i=0;i<vis.length;i++) hHtml += '<th>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
+    document.getElementById(ids.th).innerHTML = hHtml+'</tr>';
+
+    var bHtml = '';
+    for (var h=0;h<hierarchy.length;h++) {
+        var item = hierarchy[h], rowData = rows[item.index];
+        var isExp = lngExpanded[subKey][item.label] || false;
+        var hasCh = item.children && item.children.length>0;
+        var rc = item.type==='standalone' ? 'standalone-row' : 'parent-row';
+        bHtml += '<tr class="'+rc+'">';
+        var lbl = '';
+        if (hasCh) lbl += '<span class="toggle-arrow'+(isExp?' expanded':'')+'">&#9654;</span> ';
+        lbl += item.label.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+        bHtml += hasCh ? '<td data-lng-toggle="'+subKey+':'+h+'">'+lbl+'</td>' : '<td>'+lbl+'</td>';
+        for (var i=0;i<vis.length;i++) {
+            var ci = vis[i];
+            bHtml += '<td>'+formatNum(computeDisplayValue(rowData.base[ci], unitKey, false, false, days[ci]), false)+'</td>';
+        }
+        bHtml += '</tr>';
+        if (hasCh) {
+            for (var c=0;c<item.children.length;c++) {
+                var ch = item.children[c], cd = rows[ch.index];
+                var hid = !isExp ? ' hidden' : '';
+                bHtml += '<tr class="child-row'+hid+'"><td>'+ch.label.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</td>';
+                for (var i=0;i<vis.length;i++) {
+                    var ci = vis[i];
+                    bHtml += '<td>'+formatNum(computeDisplayValue(cd.base[ci], unitKey, false, false, days[ci]), false)+'</td>';
+                }
+                bHtml += '</tr>';
+            }
+        }
+    }
+    document.getElementById(ids.tb).innerHTML = bHtml;
+}
+
+/* ---- Change tables (reuse computeGrowthCell/formatGrowth via the growthMode global) ---- */
+function lngRenderChange(subKey) {
+    var sub = lngSubBlob(subKey), ids = lngIds(subKey);
+    var period = document.getElementById('periodSelector').value;
+    var view = sub.views[period]; if (!view) return;
+    var vis = getVisibleIndices(), days = view.days, rows = view.rows, meta = view.col_meta, hierarchy = sub.hierarchy;
+    var gt = lngChangeType[subKey];
+    var prevMode = growthMode; growthMode = lngChangeMode[subKey];   // computeGrowthCell + formatGrowth read this
+
+    var hHtml = '<tr><th>Change</th>';
+    for (var i=0;i<vis.length;i++) hHtml += '<th>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
+    document.getElementById(ids.cth).innerHTML = hHtml+'</tr>';
+
+    var bHtml = '';
+    for (var h=0;h<hierarchy.length;h++) {
+        var item = hierarchy[h], rowData = rows[item.index];
+        var isExp = lngExpanded[subKey][item.label] || false;
+        var hasCh = item.children && item.children.length>0;
+        var rc = item.type==='standalone' ? 'standalone-row' : 'parent-row';
+        bHtml += '<tr class="'+rc+'">';
+        var dl = '';
+        if (hasCh) dl += '<span class="toggle-arrow'+(isExp?' expanded':'')+'">&#9654;</span> ';
+        dl += item.label.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+        bHtml += hasCh ? '<td data-lng-toggle-g="'+subKey+':'+h+'">'+dl+'</td>' : '<td>'+dl+'</td>';
+        for (var i=0;i<vis.length;i++) {
+            var ci = vis[i];
+            var gv = computeGrowthCell(rowData.base, days, meta, ci, period, gt, false);
+            if (gv===null) { bHtml += '<td></td>'; continue; }
+            var cls = gv>0.0001 ? 'g-pos' : (gv<-0.0001 ? 'g-neg' : '');
+            bHtml += '<td'+(cls?' class="'+cls+'"':'')+'>'+formatGrowth(gv, false)+'</td>';
+        }
+        bHtml += '</tr>';
+        if (hasCh) {
+            for (var c=0;c<item.children.length;c++) {
+                var ch = item.children[c], cd = rows[ch.index];
+                var hid = !isExp ? ' hidden' : '';
+                bHtml += '<tr class="child-row'+hid+'"><td>'+ch.label.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</td>';
+                for (var i=0;i<vis.length;i++) {
+                    var ci = vis[i];
+                    var gv = computeGrowthCell(cd.base, days, meta, ci, period, gt, false);
+                    if (gv===null) { bHtml += '<td></td>'; continue; }
+                    var cls = gv>0.0001 ? 'g-pos' : (gv<-0.0001 ? 'g-neg' : '');
+                    bHtml += '<td'+(cls?' class="'+cls+'"':'')+'>'+formatGrowth(gv, false)+'</td>';
+                }
+                bHtml += '</tr>';
+            }
+        }
+    }
+    document.getElementById(ids.ctb).innerHTML = bHtml;
+    growthMode = prevMode;
+}
+
+function lngSyncChangeTypeSelectors() {
+    var period = document.getElementById('periodSelector').value;
+    var opts = GROWTH_OPTS[period] || [{k:'yoy',l:'Year-on-Year'}];
+    ['imports','exports'].forEach(function(sk) {
+        var sel = document.getElementById(lngIds(sk).changeType); if (!sel) return;
+        var cur = lngChangeType[sk];
+        if (!opts.some(function(o){ return o.k===cur; })) { cur = opts[0].k; lngChangeType[sk] = cur; }
+        var html = '';
+        for (var i=0;i<opts.length;i++) html += '<option value="'+opts[i].k+'"'+(opts[i].k===cur?' selected':'')+'>'+opts[i].l+'</option>';
+        sel.innerHTML = html;
+    });
+}
+function lngOnChangeType(subKey) { lngChangeType[subKey] = document.getElementById(lngIds(subKey).changeType).value; lngRenderChange(subKey); }
+function lngSetMode(subKey, mode) { lngChangeMode[subKey] = mode; lngSetModeButtons(subKey); lngRenderChange(subKey); }
+function lngSetModeButtons(subKey) {
+    var ids = lngIds(subKey);
+    var p = document.getElementById(ids.modePct), a = document.getElementById(ids.modeAbs);
+    if (p) p.className = lngChangeMode[subKey]==='pct' ? 'active' : '';
+    if (a) a.className = lngChangeMode[subKey]==='abs' ? 'active' : '';
+}
+
+/* ---- Range charts (gas-year cycle: prev / current / next + n-year avg + band).
+        Current line is capped at the latest actual month. ---- */
+function lngPopulateLookback(id, sub) {
+    var sel = document.getElementById(id); if (!sel) return;
+    var cgy = currentGY(), firstYear = sub.views.Monthly.col_meta[0].year;
+    var maxLb = Math.max(3, cgy - firstYear);
+    var html = '';
+    for (var n=3;n<=maxLb;n++) html += '<option value="'+n+'"'+(n===5?' selected':'')+'>'+n+' years</option>';
+    sel.innerHTML = html;
+}
+
+function lngUpdateRange(subKey) {
+    var sub = lngSubBlob(subKey), ids = lngIds(subKey);
+    var selected = getMultiSelectState(ids.rangeSel);
+    if (!selected || selected.length===0) selected = [sub.total_row];
+    var unitKey = document.getElementById('unitSelector').value;
+    var lookback = parseInt(document.getElementById(ids.lookback).value) || 5;
+    var cgy = currentGY(), prevGY = cgy-1, nextGY = cgy+1;
+    var labels = gyMonthLabels();
+    var latestIdx = LNG.latest_actual ? LNG.latest_actual.index : 1e9;
+
+    function valAt(idx) {
+        if (idx<0) return null;
+        var b = lngSumAt(sub, selected, idx);
+        return applyUnitConversion(b, unitKey, sub.views.Monthly.days[idx]);
+    }
+    function gyValues(gy, cap) {
+        var out = [];
+        for (var i=0;i<12;i++) {
+            var amt = gyMonthToActual(gy, i);
+            var idx = lngFindMonthlyIdx(sub, amt.year, amt.month);
+            if (cap && idx > latestIdx) { out.push(null); continue; }   // cap current line at latest actual
+            out.push(valAt(idx));
+        }
+        return out;
+    }
+    var prevVals = gyValues(prevGY, false), currVals = gyValues(cgy, true), nextVals = gyValues(nextGY, false);
+
+    var lbStart = cgy-lookback, lbEnd = cgy-1, avg=[], mn=[], mx=[];
+    for (var mo=0;mo<12;mo++) {
+        var samples=[];
+        for (var gy=lbStart;gy<=lbEnd;gy++) {
+            var amt = gyMonthToActual(gy, mo);
+            var v = valAt(lngFindMonthlyIdx(sub, amt.year, amt.month));
+            if (v!==null && v!==undefined) samples.push(v);
+        }
+        if (samples.length===0) { avg.push(null); mn.push(null); mx.push(null); continue; }
+        var s=0; for (var k=0;k<samples.length;k++) s+=samples[k];
+        avg.push(s/samples.length); mn.push(Math.min.apply(null,samples)); mx.push(Math.max.apply(null,samples));
+    }
+
+    var unitLabel = getHeaderUnitLabel(unitKey);
+    var isTotal = (selected.length===1 && selected[0]===sub.total_row);
+    var selLabel = isTotal ? 'Total' : (selected.length<=2 ? selected.join(' + ') : selected[0]+' + '+(selected.length-1)+' more');
+    document.getElementById(ids.rangeTitle).textContent = (subKey==='imports'?'Import Range':'Export Range') + ' — ' + selLabel + ' (' + unitLabel + ')';
+
+    var prevLabel = 'GY '+String(prevGY).slice(-2)+'/'+String(prevGY+1).slice(-2);
+    var curLabel  = 'GY '+String(cgy).slice(-2)   +'/'+String(cgy+1).slice(-2)   +' (current)';
+    var nextLabel = 'GY '+String(nextGY).slice(-2)+'/'+String(nextGY+1).slice(-2)+' (forecast)';
+    var datasets = [
+        { label: lookback+'y max',     data: mx,       borderColor:'rgba(0,0,0,0)', backgroundColor:'rgba(0,0,0,0)', pointRadius:0, fill:false, order:20 },
+        { label: lookback+'y range',   data: mn,       borderColor:'rgba(0,0,0,0)', backgroundColor:'rgba(147,149,162,0.28)', pointRadius:0, fill:'-1', order:19 },
+        { label: lookback+'y average', data: avg,      borderColor:'#272962', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, pointRadius:0, fill:false, tension:0.25, order:4 },
+        { label: prevLabel,            data: prevVals, borderColor:'#0C5B19', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, pointRadius:2, fill:false, tension:0.25, order:3 },
+        { label: curLabel,             data: currVals, borderColor:'#C00000', backgroundColor:'rgba(0,0,0,0)', borderWidth:2.6, pointRadius:3, fill:false, tension:0.25, order:1 },
+        { label: nextLabel,            data: nextVals, borderColor:'#539648', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, borderDash:[6,4], pointRadius:2, fill:false, tension:0.25, order:2 },
+    ];
+    var opts = chartOptionsLine(unitKey);
+    opts.scales.y.title.text = unitLabel;
+
+    if (lngCharts[ids.rangeChart]) { lngCharts[ids.rangeChart].destroy(); lngCharts[ids.rangeChart] = null; }
+    var canvas = document.getElementById(ids.rangeCanvas); if (!canvas) return;
+    lngCharts[ids.rangeChart] = new Chart(canvas, { type:'line', data:{labels:labels, datasets:datasets}, options:opts });
+    renderHtmlLegend(lngCharts[ids.rangeChart], ids.rangeLegend, { filter: function(label){ return !(label||'').endsWith(' max'); } });
+}
+
+/* ---- Stacked build-up charts (own from/to + chart-type toggle) ---- */
+function lngBuildStackSelector(subKey) {
+    var sub = lngSubBlob(subKey), ids = lngIds(subKey);
+    var container = document.getElementById(ids.stackSel); if (!container) return;
+    container.innerHTML = ''; container.classList.add('multi-select');
+    var button = document.createElement('button'); button.type='button'; button.className='ms-button'; container.appendChild(button);
+    var panel = document.createElement('div'); panel.className='ms-panel'; container.appendChild(panel);
+    panel.appendChild(lngStackItem(subKey, 'All', 'ms-group-header', '__ALL__'));
+    var div = document.createElement('div'); div.className='ms-divider'; panel.appendChild(div);
+    for (var i=0;i<sub.chart_series.length;i++) panel.appendChild(lngStackItem(subKey, sub.chart_series[i], '', sub.chart_series[i]));
+    button.addEventListener('click', function(ev){ ev.stopPropagation(); container.classList.toggle('open'); });
+    lngStackRefresh(subKey);
+}
+function lngStackItem(subKey, text, extraCls, key) {
+    var lbl = document.createElement('label'); lbl.className = 'ms-item'+(extraCls?' '+extraCls:'');
+    var cb = document.createElement('input'); cb.type='checkbox'; cb.setAttribute('data-key', key);
+    var sp = document.createElement('span'); sp.textContent = text;
+    lbl.appendChild(cb); lbl.appendChild(sp);
+    cb.addEventListener('change', function(){ lngStackClick(subKey, key); lngStackRefresh(subKey); lngUpdateStack(subKey); });
+    return lbl;
+}
+function lngStackClick(subKey, key) {
+    var sub = lngSubBlob(subKey), all = sub.chart_series.slice();
+    if (key==='__ALL__') {
+        var allIn = all.every(function(r){ return lngStackSel[subKey].indexOf(r)>=0; });
+        lngStackSel[subKey] = allIn ? [] : all.slice();
+        return;
+    }
+    lngToggleArr(lngStackSel[subKey], key);
+}
+function lngStackRefresh(subKey) {
+    var sub = lngSubBlob(subKey), ids = lngIds(subKey), all = sub.chart_series.slice();
+    var nAll = all.filter(function(r){ return lngStackSel[subKey].indexOf(r)>=0; }).length;
+    lngStackSetCb(ids.stackSel, '__ALL__', nAll===all.length, nAll>0 && nAll<all.length);
+    for (var i=0;i<all.length;i++) lngStackSetCb(ids.stackSel, all[i], lngStackSel[subKey].indexOf(all[i])>=0, false);
+    lngStackBtnLabel(subKey);
+}
+function lngStackSetCb(containerId, key, checked, indet) {
+    var cb = document.querySelector('#'+containerId+' input[data-key="'+CSS.escape(key)+'"]');
+    if (!cb) return; cb.checked = !!checked; cb.indeterminate = !!indet;
+}
+function lngStackBtnLabel(subKey) {
+    var sub = lngSubBlob(subKey), ids = lngIds(subKey);
+    var c = document.getElementById(ids.stackSel); if (!c) return;
+    var btn = c.querySelector('.ms-button'); var all = sub.chart_series.slice(), sel = lngStackSel[subKey];
+    if (all.every(function(r){ return sel.indexOf(r)>=0; })) { btn.textContent = 'All'; btn.title = all.join(', '); return; }
+    if (sel.length===0) { btn.textContent = 'None'; btn.title = ''; return; }
+    btn.textContent = (sel.length<=2) ? sel.join(' + ') : sel[0]+' + '+(sel.length-1)+' more';
+    btn.title = sel.join(', ');
+}
+function lngSetStackType(subKey, t) { lngStackType[subKey] = t; lngSetStackTypeButtons(subKey); lngUpdateStack(subKey); }
+function lngSetStackTypeButtons(subKey) {
+    var pre = lngIds(subKey).stackBtn, btns = ['bar','area','line'];
+    for (var i=0;i<btns.length;i++) { var b = document.getElementById('btn'+pre+'-'+btns[i]); if (b) b.className = (btns[i]===lngStackType[subKey]) ? 'active' : ''; }
+}
+function lngPopulateStackRange(subKey) {
+    var sub = lngSubBlob(subKey), ids = lngIds(subKey), view = sub.views.Monthly;
+    var fs = document.getElementById(ids.from), ts = document.getElementById(ids.to); if (!fs || !ts) return;
+    var html = '';
+    for (var i=0;i<view.col_meta.length;i++) html += '<option value="'+i+'">'+view.col_meta[i].label+'</option>';
+    fs.innerHTML = html; ts.innerHTML = html;
+    var fromIdx = 0;
+    for (var i=0;i<view.col_meta.length;i++) { if (view.col_meta[i].year===2025 && view.col_meta[i].month===1) { fromIdx = i; break; } }
+    var toIdx = view.col_meta.length-1;
+    if (LNG.latest_actual) toIdx = Math.min(view.col_meta.length-1, LNG.latest_actual.index + 8);
+    fs.value = fromIdx; ts.value = toIdx;
+}
+function lngUpdateStack(subKey) {
+    var sub = lngSubBlob(subKey), ids = lngIds(subKey);
+    var type = lngStackType[subKey], sel = lngStackSel[subKey];
+    var unitKey = document.getElementById('unitSelector').value;
+    var view = sub.views.Monthly;
+    var fromIdx = parseInt(document.getElementById(ids.from).value), toIdx = parseInt(document.getElementById(ids.to).value);
+    if (isNaN(fromIdx) || isNaN(toIdx)) { fromIdx = 0; toIdx = view.col_meta.length-1; }
+    if (fromIdx > toIdx) { var t = fromIdx; fromIdx = toIdx; toIdx = t; }
+    var labels = [];
+    for (var i=fromIdx;i<=toIdx;i++) labels.push(view.short_columns[i] || view.columns[i]);
+
+    var stacked = (type==='bar' || type==='area');
+    var series = sub.chart_series.filter(function(s){ return sel.indexOf(s)>=0; });
+    var datasets = [];
+    for (var s=0;s<series.length;s++) {
+        var label = series[s], row = lngGetRow(sub, label), data = [];
+        for (var i=fromIdx;i<=toIdx;i++) {
+            var v = row ? applyUnitConversion(row.base[i], unitKey, view.days[i]) : 0;
+            if (stacked && v<0) v = 0;
+            data.push(v);
+        }
+        var color = lngColor(sub, label);
+        var ds = { label: label, data: data, borderColor: color, pointRadius: 0, tension: 0.2 };
+        if (type==='bar') { ds.backgroundColor = color+'CC'; ds.borderWidth = 1; ds.stack = 'lng'; }
+        else if (type==='area') { ds.backgroundColor = color+'CC'; ds.borderWidth = 1; ds.stack = 'lng'; ds.fill = (s===0)?'origin':'-1'; }
+        else { ds.backgroundColor = 'rgba(0,0,0,0)'; ds.borderWidth = 2; ds.fill = false; }
+        datasets.push(ds);
+    }
+
+    var unitLabel = getHeaderUnitLabel(unitKey);
+    document.getElementById(ids.stackTitle).textContent = (subKey==='imports'?'Import Build-up':'Export Build-up') + ' (' + unitLabel + ')';
+    var chartType = (type==='bar') ? 'bar' : 'line';
+    var opts = stacked ? chartOptionsStacked(unitKey) : chartOptionsLine(unitKey);
+    opts.scales.y.title.text = unitLabel;
+
+    if (lngCharts[ids.stackChart]) { lngCharts[ids.stackChart].destroy(); lngCharts[ids.stackChart] = null; }
+    var canvas = document.getElementById(ids.stackCanvas); if (!canvas) return;
+    lngCharts[ids.stackChart] = new Chart(canvas, { type: chartType, data: {labels:labels, datasets:datasets}, options: opts });
+    renderHtmlLegend(lngCharts[ids.stackChart], ids.stackLegend, {});
+}
+
+/* LNG table expand/collapse toggles (value + change tables share expand state). */
+document.addEventListener('click', function(e) {
+    var td = e.target.closest('td[data-lng-toggle]');
+    if (td) {
+        var p = td.getAttribute('data-lng-toggle').split(':'), sk = p[0], idx = parseInt(p[1]);
+        var label = lngSubBlob(sk).hierarchy[idx].label;
+        lngExpanded[sk][label] = !lngExpanded[sk][label];
+        lngRenderTable(sk); lngRenderChange(sk);
+        return;
+    }
+    var td2 = e.target.closest('td[data-lng-toggle-g]');
+    if (td2) {
+        var p = td2.getAttribute('data-lng-toggle-g').split(':'), sk = p[0], idx = parseInt(p[1]);
+        var label = lngSubBlob(sk).hierarchy[idx].label;
+        lngExpanded[sk][label] = !lngExpanded[sk][label];
+        lngRenderTable(sk); lngRenderChange(sk);
+    }
+});
+
 /* === EVENTS === */
 function onPeriodChange() {
     updateRangeSelectors();
@@ -2816,6 +3528,7 @@ function onPeriodChange() {
 function onRangeChange() { updateAll(); }
 function onGrowthTypeChange() { growthType=document.getElementById('growthTypeSelector').value; updateGrowthTable(); }
 function updateAll() {
+    if (DATA.composite) { lngUpdateAll(); return; }
     updateTableValueModeLabels();
     updateEfficiencyNote();
     updateTable();
@@ -2885,6 +3598,10 @@ document.addEventListener('DOMContentLoaded', function() {
     updateAll();
     setupHover('tableBody');
     setupHover('growthBody');
+    setupHover('lngImpBody');
+    setupHover('lngImpChBody');
+    setupHover('lngExpBody');
+    setupHover('lngExpChBody');
 });
 """
 
@@ -3069,6 +3786,89 @@ document.addEventListener('DOMContentLoaded', function() {
 
     html += '</div>\n\n'  # end main-grid
 
+    # === Global LNG composite grid: 4 stacked tables + 2 chart rows ===
+    html += '<div class="lng-grid" id="lngGrid">\n'
+
+    # Imports table
+    html += '  <div class="lng-block">\n'
+    html += '    <div class="lng-block-title">Imports</div>\n'
+    html += '    <div class="table-container"><table><thead id="lngImpHead"></thead><tbody id="lngImpBody"></tbody></table></div>\n'
+    html += '  </div>\n'
+
+    # Imports change table
+    html += '  <div class="lng-block">\n'
+    html += '    <div class="growth-section">\n'
+    html += '      <div class="growth-controls">\n'
+    html += '        <span class="lng-block-title">Change in Imports</span>\n'
+    html += '        <div class="control-group"><label>Change</label><select id="lngImpChangeType" onchange="lngOnChangeType(\'imports\')"></select></div>\n'
+    html += '        <div class="growth-toggle">\n'
+    html += '          <button id="lngImpModePct" class="active" onclick="lngSetMode(\'imports\',\'pct\')">% Change</button>\n'
+    html += '          <button id="lngImpModeAbs" onclick="lngSetMode(\'imports\',\'abs\')">Absolute</button>\n'
+    html += '        </div>\n'
+    html += '      </div>\n'
+    html += '      <div class="growth-table-container"><table><thead id="lngImpChHead"></thead><tbody id="lngImpChBody"></tbody></table></div>\n'
+    html += '    </div>\n'
+    html += '  </div>\n'
+
+    # Exports table
+    html += '  <div class="lng-block">\n'
+    html += '    <div class="lng-block-title">Exports</div>\n'
+    html += '    <div class="table-container"><table><thead id="lngExpHead"></thead><tbody id="lngExpBody"></tbody></table></div>\n'
+    html += '  </div>\n'
+
+    # Exports change table
+    html += '  <div class="lng-block">\n'
+    html += '    <div class="growth-section">\n'
+    html += '      <div class="growth-controls">\n'
+    html += '        <span class="lng-block-title">Change in Exports</span>\n'
+    html += '        <div class="control-group"><label>Change</label><select id="lngExpChangeType" onchange="lngOnChangeType(\'exports\')"></select></div>\n'
+    html += '        <div class="growth-toggle">\n'
+    html += '          <button id="lngExpModePct" class="active" onclick="lngSetMode(\'exports\',\'pct\')">% Change</button>\n'
+    html += '          <button id="lngExpModeAbs" onclick="lngSetMode(\'exports\',\'abs\')">Absolute</button>\n'
+    html += '        </div>\n'
+    html += '      </div>\n'
+    html += '      <div class="growth-table-container"><table><thead id="lngExpChHead"></thead><tbody id="lngExpChBody"></tbody></table></div>\n'
+    html += '    </div>\n'
+    html += '  </div>\n'
+
+    # Range charts row (Import range | Export range)
+    html += '  <div class="lng-charts-row">\n'
+    for side, pre, label in [("imports", "lngImp", "Import Range"), ("exports", "lngExp", "Export Range")]:
+        html += '    <div class="grid-quad">\n'
+        html += '      <div class="chart-controls">\n'
+        html += f'        <div class="control-group"><label>Series</label><div class="multi-select" id="msLng{pre[3:]}Range"></div></div>\n'
+        html += f'        <div class="control-group"><label>Average range</label><select id="{pre}RangeLookback" onchange="lngUpdateRange(\'{side}\')"></select></div>\n'
+        html += '      </div>\n'
+        html += f'      <div class="chart-title" id="{pre}RangeTitle">{label}</div>\n'
+        html += f'      <div class="chart-canvas-wrap"><canvas id="{pre}RangeCanvas"></canvas></div>\n'
+        html += f'      <div class="custom-legend" id="{pre}RangeLegend"></div>\n'
+        html += '    </div>\n'
+    html += '  </div>\n'
+
+    # Stacked charts row (Import build-up | Export build-up)
+    html += '  <div class="lng-charts-row">\n'
+    for side, pre, label in [("imports", "lngImp", "Import Build-up"), ("exports", "lngExp", "Export Build-up")]:
+        html += '    <div class="grid-quad">\n'
+        html += '      <div class="chart-controls">\n'
+        html += '        <div class="control-group"><label>Chart</label>\n'
+        html += '          <div class="value-toggle">\n'
+        html += f'            <button id="btn{pre}Stack-bar" class="active" onclick="lngSetStackType(\'{side}\',\'bar\')">Stacked Bar</button>\n'
+        html += f'            <button id="btn{pre}Stack-area" onclick="lngSetStackType(\'{side}\',\'area\')">Stacked Area</button>\n'
+        html += f'            <button id="btn{pre}Stack-line" onclick="lngSetStackType(\'{side}\',\'line\')">Line</button>\n'
+        html += '          </div>\n'
+        html += '        </div>\n'
+        html += f'        <div class="control-group"><label>Series</label><div class="multi-select" id="msLng{pre[3:]}Stack"></div></div>\n'
+        html += f'        <div class="control-group"><label>From</label><select id="{pre}StackFrom" onchange="lngUpdateStack(\'{side}\')"></select></div>\n'
+        html += f'        <div class="control-group"><label>To</label><select id="{pre}StackTo" onchange="lngUpdateStack(\'{side}\')"></select></div>\n'
+        html += '      </div>\n'
+        html += f'      <div class="chart-title" id="{pre}StackTitle">{label}</div>\n'
+        html += f'      <div class="chart-canvas-wrap"><canvas id="{pre}StackCanvas"></canvas></div>\n'
+        html += f'      <div class="custom-legend" id="{pre}StackLegend"></div>\n'
+        html += '    </div>\n'
+    html += '  </div>\n'
+
+    html += '</div>\n\n'  # end lng-grid
+
     # Embed container for external dashboard tabs (Storage / LNG Sendout).
     # Shown only when an embed tab is active (CSS body.embed-active).
     html += '<div class="embed-container" id="embedContainer">\n'
@@ -3095,7 +3895,10 @@ def main():
     ordered_keys = []
     for config in DATASETS:
         print(f"\n--- Building dataset: {config['key']} ({config['title']}) ---")
-        blob = build_dataset_blob(config)
+        if config.get("composite"):
+            blob = build_composite_blob(config)
+        else:
+            blob = build_dataset_blob(config)
         datasets_by_key[config["key"]] = blob
         ordered_keys.append(config["key"])
 
