@@ -829,6 +829,9 @@ def build_projects_blob(config):
                 "operator": operator, "owners": owners, "companies": companies,
                 "co_stakes": co_stakes,
             })
+        # Capacity views (Unrisked + Risked) read straight from the extracted
+        # monthly capacity series (the model's phased train-by-train totals).
+        capacity = build_projects_capacity(wb, latest_actual)
     finally:
         wb.close()
 
@@ -850,6 +853,9 @@ def build_projects_blob(config):
         "unit_config": LNG_UNIT_CONFIG,
         # Project-level production period views (rows = projects; JS groups them).
         "production": production,
+        # Project-level capacity period views (Unrisked + Risked; end-of-period
+        # level over the 4 'level' periods only). Powers the Capacity sub-tab.
+        "capacity": capacity,
         # latest actual month (shared with Global LNG) caps the range chart's
         # current-year line; region colors keep the stacked area consistent.
         "latest_actual": latest_actual,
@@ -915,6 +921,77 @@ def build_projects_production(wb, latest_actual=None):
         }
     print(f"  Production views built: {len(rows)} projects x {len(dates)} months")
     return {"views": views}
+
+
+def build_projects_capacity(wb, latest_actual=None):
+    """Build project-level CAPACITY period views (Unrisked + Risked) directly from
+    the extracted monthly capacity series ('LNG Proj Unrisked Cap' / 'LNG Proj
+    Risked Cap'), which carry the model's own phased train-by-train totals per main.
+
+    Capacity is a LEVEL, not a flow: each annual/seasonal bucket is the END-OF-PERIOD
+    value (the level in the bucket's last month), never a sum. Only the four 'level'
+    periods are built (no Monthly/Quarterly): Annual CY, Gas Year, Winter, Summer.
+    """
+    def read_series(sheet_name):
+        ws = wb[sheet_name]
+        dates, last_col = [], 1
+        for c in range(2, ws.max_column + 1):
+            v = ws.cell(row=1, column=c).value
+            if v is not None:
+                dates.append(v); last_col = c
+        rows = []
+        for r in range(2, ws.max_row + 1):
+            nm = ws.cell(row=r, column=1).value
+            if not nm:
+                continue
+            vals = [ws.cell(row=r, column=c).value for c in range(2, last_col + 1)]
+            vals = [float(v) if isinstance(v, (int, float)) else 0.0 for v in vals]
+            rows.append({"label": str(nm).strip(), "values": vals})
+        return dates, rows
+
+    dates, unr_rows = read_series("LNG Proj Unrisked Cap")
+    _, rk_rows = read_series("LNG Proj Risked Cap")
+    days = [monthrange(d.year, d.month)[1] if isinstance(d, datetime) else 30 for d in dates]
+    n = len(dates)
+
+    boundary = None
+    if latest_actual:
+        boundary = datetime(latest_actual["year"], latest_actual["month"], 1)
+
+    def col_is_forecast(col):
+        if not boundary or not col["indices"]:
+            return 1
+        last = dates[col["indices"][-1]]
+        return 1 if (isinstance(last, datetime) and last > boundary) else 0
+
+    def sample_eop(rows, period_cols):
+        out = []
+        for row in rows:
+            vals = row["values"]
+            base = [(vals[c["indices"][-1]] if c["indices"] else 0.0) for c in period_cols]
+            out.append({"label": row["label"], "base": base})
+        return out
+
+    period_results = aggregate_monthly_to_periods(dates, days)
+    WANTED = ["Annual CY", "Gas Year", "Winter", "Summer"]
+
+    def build_views(rows):
+        views = {}
+        for vn in WANTED:
+            pc = period_results.get(vn, [])
+            views[vn] = {
+                "columns": [c["label"] for c in pc],
+                "short_columns": [c["short"] for c in pc],
+                "col_meta": [{"label": c["label"], "short": c["short"], "year": c.get("year", 0),
+                              "month": c.get("month"), "days": c["days"]} for c in pc],
+                "days": [c["days"] for c in pc],
+                "netok": [col_is_forecast(c) for c in pc],
+                "rows": sample_eop(rows, pc),
+            }
+        return views
+
+    print(f"  Capacity views built: {len(unr_rows)} projects x {n} months (end-of-period level)")
+    return {"unrisked": build_views(unr_rows), "risked": build_views(rk_rows)}
 
 
 def detect_latest_actual(config):
@@ -1695,6 +1772,14 @@ body.projects-tab .lng-subtab-bar { display: flex; }
 }
 .prj-outlook-charts .grid-quad { min-width: 0; display: flex; flex-direction: column; }
 @media (max-width: 1100px) { .prj-outlook-charts { grid-template-columns: 1fr; } }
+/* Capacity sub-tab: two tables side by side (Risked | Unrisked) */
+.cap-tables { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 12px; }
+.cap-table-block { min-width: 0; }
+.cap-block-title {
+    font-size: 12px; font-weight: bold; color: """ + db + """;
+    text-transform: uppercase; letter-spacing: 0.5px; padding: 4px 2px 8px;
+}
+@media (max-width: 1100px) { .cap-tables { grid-template-columns: 1fr; } }
 /* Chart header: grey bar carrying a centered title (left chart also has the
    Average-range dropdown on the left; right chart has just the title). */
 .prj-chart-head { position: relative; min-height: 42px; }
@@ -2227,9 +2312,9 @@ function lngSetSubtab(which) {
         if (currentKey !== 'global_lng' || embedActive) switchDataset('global_lng');
     } else {
         if (currentKey !== 'lng_projects' || embedActive) switchDataset('lng_projects');
-        prjSetSubtab(which === 'projects' ? 'projects' : 'outlook');
+        prjSetSubtab(which);   // 'outlook' | 'projects' | 'capacity'
     }
-    var btns = { overview: 'lngSubOverview', outlook: 'lngSubOutlook', projects: 'lngSubProjects' };
+    var btns = { overview: 'lngSubOverview', outlook: 'lngSubOutlook', projects: 'lngSubProjects', capacity: 'lngSubCapacity' };
     for (var k in btns) {
         var b = document.getElementById(btns[k]);
         if (b) b.classList.toggle('active', k === which);
@@ -4215,7 +4300,7 @@ function prjSum(arr,key){ var s=0; for(var i=0;i<arr.length;i++){ var v=arr[i][k
 function prjSumActive(arr,key){ var s=0; for(var i=0;i<arr.length;i++){ var p=arr[i]; if(p.status==='Shut-down') continue; var v=p[key]; if(typeof v==='number'&&!isNaN(v)) s+=v; } return s; }
 function prjFieldVal(p,dim){ return dim==='project'?p.name : dim==='status'?p.status : dim==='region'?p.region : dim==='country'?p.country : null; }
 function prjCap(s){ return s.charAt(0).toUpperCase()+s.slice(1); }
-function prjContainerId(scope,dim){ return (scope==='chart'?'prjcFilter':'prjFilter')+prjCap(dim); }
+function prjContainerId(scope,dim){ var pre=scope==='capchart'?'capcFilter':(scope==='chart'?'prjcFilter':'prjFilter'); return pre+prjCap(dim); }
 function prjMatchDim(p,dim,scope){
     var sel=prjFilters[scope][dim]; if(!sel.length) return true;
     if(dim==='company') return p.companies.some(function(c){return sel.indexOf(c)>=0;});
@@ -4279,11 +4364,12 @@ function prjInit(){
     prjOutlookPopulateRange();
     prjOutlookPopulateLookback();
     prjSetLink(true);                                     // start linked (chart controls hidden)
+    capInit();                                            // set up the Capacity sub-tab
     prjSetSubtab('outlook');
     prjApplyFilters();
 }
-// table filters changed -> re-render assumptions + production + change + (charts if linked)
-function prjApplyFilters(){ prjUpdateFilterUI('table'); prjUpdateNetToggle(); prjRenderSummary(); prjRenderTree(); prjOutlookRender(); }
+// table filters changed -> re-render assumptions + production + change + capacity + (charts if linked)
+function prjApplyFilters(){ prjUpdateFilterUI('table'); prjUpdateNetToggle(); capUpdateNetToggle(); prjRenderSummary(); prjRenderTree(); prjOutlookRender(); capRender(); }
 // chart filters changed -> re-render only the charts
 function prjChartApply(){ prjUpdateFilterUI('chart'); prjOutlookCharts(); }
 
@@ -4334,22 +4420,29 @@ function prjToggle(scope, dimKey, val){
     // (A status toggle doesn't change the view.) Applies to the matching scope's
     // view dropdown — table when linked drives both table + charts.
     if(dimKey!=='status'){
-        var vbEl=document.getElementById(scope==='chart' ? 'prjcViewBy' : 'prjViewBy');
+        var vbId=scope==='capchart'?'capcViewBy':(scope==='chart'?'prjcViewBy':'prjViewBy');
+        var vbEl=document.getElementById(vbId);
         if(vbEl) vbEl.value=prjSuggestView(scope);
     }
-    if(scope==='table') prjApplyFilters(); else prjChartApply();
+    if(scope==='table') prjApplyFilters(); else if(scope==='capchart') capChartApply(); else prjChartApply();
 }
 function prjResetFilters(scope){
     prjFilters[scope]={status:[],region:[],country:[],company:[],project:[]};
     if(scope==='table'){
-        // Reset returns the whole Supply Outlook to its fresh, page-load state:
+        // Reset returns the whole Supply Outlook AND Capacity to a fresh state:
         // regional view, default period/range, Gross basis.
         prjNetMode='gross';
         var vb=document.getElementById('prjViewBy'); if(vb) vb.value='region';
         var pd=document.getElementById('prjPeriod'); if(pd) pd.value='Annual CY';
         prjOutlookPopulateRange();
+        // Capacity sub-tab shares this filter bar — reset its controls too.
+        capNetMode='gross'; capExpanded={};
+        var cvb=document.getElementById('capViewBy'); if(cvb) cvb.value='region';
+        var cpd=document.getElementById('capPeriod'); if(cpd) cpd.value='Annual CY';
+        capPopulateRange();
         prjApplyFilters();
-    } else { prjChartApply(); }
+    } else if(scope==='capchart') { capChartApply(); }
+    else { prjChartApply(); }
 }
 function prjUpdateFilterUI(scope){
     PRJ_DIMS.forEach(function(d){
@@ -4471,6 +4564,10 @@ function prjSetSubtab(t){
     // Sub-tab buttons now live in the shared lng-subtab bar; here we just swap panes.
     document.getElementById('prjPaneProjects').classList.toggle('active', t==='projects');
     document.getElementById('prjPaneOutlook').classList.toggle('active', t==='outlook');
+    document.getElementById('prjPaneCapacity').classList.toggle('active', t==='capacity');
+    // Re-render the Capacity charts when its pane becomes visible (they may have
+    // been drawn to a hidden canvas during the last filter apply).
+    if(t==='capacity') capRender();
 }
 
 // Region/Country/Project expand toggles (event delegation on the tree).
@@ -4767,6 +4864,240 @@ document.addEventListener('click', function(e){
     prjOutlookRender();
 });
 
+/* ============================================================================
+   CAPACITY sub-tab (4th Global LNG > project pane). Two tables side-by-side
+   (Risked | Unrisked) + a shared filter bar (reuses the projects-tab bar) +
+   two stacked-area charts (Risked | Unrisked) with a Link-to-table-filters
+   toggle and a Gross/Net basis toggle. Capacity is a LEVEL: each annual/seasonal
+   bucket is the END-OF-PERIOD value (computed in build_projects_capacity), and
+   only the four 'level' periods are offered (no Monthly/Quarterly). Reuses the
+   prj* filter/conversion/chart helpers throughout.
+   ========================================================================== */
+var capExpanded = {};        // capacity tree expand state (shared by both tables)
+var capChartLinked = true;   // charts follow the table filters by default
+var capNetMode = 'gross';    // capacity value basis: 'gross' | 'net' (stake-weighted)
+var capUnrChart = null, capRkChart = null;
+
+// Capacity label: mmt -> "mmtpa"; rate units keep their daily label; other volume
+// units become per-annum ("bcf/yr"). Capacity is an annual figure.
+function capUnitLabel(){
+    var u=prjUnit(), c=prjUnitCfg();
+    if(u==='mmt') return 'mmtpa';
+    if(c.isRate) return c.rateLabel;
+    return c.volLabel+'/yr';
+}
+
+/* ---- Net (stake-weighted) helpers — net applies to ALL buckets for capacity
+        (a level is well-defined historically, unlike the forward-only production
+        net). Net = gross x sum of the SELECTED companies' stakes per project. ---- */
+function capNetSel(scope){ return prjFilters[scope].company; }
+function capNetActive(scope){ return capNetMode==='net' && capNetSel(scope).length>0; }
+function capStakeMul(name, scope){
+    if(capNetMode!=='net') return 1;
+    var sel=capNetSel(scope); if(!sel.length) return 0;
+    var p=PRJ_BY_NAME[name]; if(!p||!p.co_stakes) return 0;
+    var m=0; for(var i=0;i<sel.length;i++){ var s=p.co_stakes[sel[i]]; if(typeof s==='number'&&!isNaN(s)) m+=s; }
+    return m;
+}
+function capUpdateNetToggle(){
+    var wrap=document.getElementById('capNetToggle'); if(!wrap) return;
+    var on=prjFilters.table.company.length>0;
+    wrap.style.display = on ? 'flex' : 'none';
+    if(!on && capNetMode!=='gross') capNetMode='gross';
+    var gb=document.getElementById('capGrossBtn'), nb=document.getElementById('capNetBtn');
+    if(gb) gb.className = capNetMode==='gross'?'active':'';
+    if(nb) nb.className = capNetMode==='net'?'active':'';
+    var note=document.getElementById('capNetNote');
+    if(note) note.style.display = (on && capNetMode==='net') ? 'inline' : 'none';
+}
+function capSetNetMode(m){ capNetMode=m; capUpdateNetToggle(); capRender(); }
+
+/* ---- Range option lists (4 periods only). Default window starts ~2023 so the
+        forward build-out is the focus; runs to the end of the model. ---- */
+function capFillRange(view, fs, ts){
+    var html=''; for(var i=0;i<view.col_meta.length;i++) html+='<option value="'+i+'">'+view.col_meta[i].label+'</option>';
+    fs.innerHTML=html; ts.innerHTML=html;
+}
+function capDefaultRange(view, fs, ts){
+    var from=0, to=view.col_meta.length-1;
+    for(var i=0;i<view.col_meta.length;i++){ if(view.col_meta[i].year>=2023){ from=i; break; } }
+    fs.value=from; ts.value=to;
+}
+function capPopulateRange(){
+    var period=document.getElementById('capPeriod').value;
+    var view=PRJ.capacity.unrisked[period]; if(!view) return;
+    capFillRange(view, document.getElementById('capFrom'), document.getElementById('capTo'));
+    capDefaultRange(view, document.getElementById('capFrom'), document.getElementById('capTo'));
+}
+function capcPopulateRange(copyFromTable){
+    var period=document.getElementById('capcPeriod').value;
+    var view=PRJ.capacity.unrisked[period]; if(!view) return;
+    var fs=document.getElementById('capcFrom'), ts=document.getElementById('capcTo'); if(!fs||!ts) return;
+    capFillRange(view, fs, ts);
+    if(copyFromTable && document.getElementById('capPeriod').value===period){
+        fs.value=document.getElementById('capFrom').value; ts.value=document.getElementById('capTo').value;
+    } else { capDefaultRange(view, fs, ts); }
+}
+function capOnPeriod(){ capPopulateRange(); capRender(); }
+function capcOnPeriod(){ capcPopulateRange(false); capCharts(); }
+function capCloneChartControls(){
+    var vb=document.getElementById('capcViewBy');
+    if(vb) vb.innerHTML='<option value="region">Region</option><option value="country">Country</option><option value="project">Project</option>';
+    var pd=document.getElementById('capcPeriod');
+    if(pd){ var L={'Annual CY':'Annual (Calendar Year)','Gas Year':'Annual (Gas Year)','Winter':'Winter (Oct-Mar)','Summer':'Summer (Apr-Sep)'};
+        pd.innerHTML=['Annual CY','Gas Year','Winter','Summer'].map(function(p){return '<option value="'+p+'"'+(p==='Annual CY'?' selected':'')+'>'+L[p]+'</option>';}).join(''); }
+}
+
+/* ---- Chart link/unlink (mirrors prjSetLink) using the 'capchart' filter scope. ---- */
+function capChartScope(){ return capChartLinked ? 'table' : 'capchart'; }
+function capChartViewBy(){ return document.getElementById(capChartLinked?'capViewBy':'capcViewBy').value; }
+function capChartPeriodVal(){ return document.getElementById(capChartLinked?'capPeriod':'capcPeriod').value; }
+function capChartFromEl(){ return document.getElementById(capChartLinked?'capFrom':'capcFrom'); }
+function capChartToEl(){ return document.getElementById(capChartLinked?'capTo':'capcTo'); }
+function capChartApply(){ prjUpdateFilterUI('capchart'); capCharts(); }
+function capSetLink(linked){
+    capChartLinked=linked;
+    var btn=document.getElementById('capLinkBtn');
+    if(btn){ btn.classList.toggle('active', linked); btn.textContent = linked ? '✓ Linked to table filters' : 'Unlinked — independent'; }
+    var ctrls=document.getElementById('capChartFilterControls'); if(ctrls) ctrls.style.display = linked ? 'none' : 'flex';
+    if(!linked){
+        ['status','region','country','company','project'].forEach(function(d){ prjFilters.capchart[d]=prjFilters.table[d].slice(); });
+        var vb=document.getElementById('capcViewBy'); if(vb) vb.value=document.getElementById('capViewBy').value;
+        var pd=document.getElementById('capcPeriod'); if(pd) pd.value=document.getElementById('capPeriod').value;
+        capcPopulateRange(true);
+        prjUpdateFilterUI('capchart');
+    }
+    capCharts();
+}
+function capToggleLink(){ capSetLink(!capChartLinked); }
+
+/* ---- Region/Country/Project tree (mirrors prjBuildTree; own expand state). ---- */
+function capCells(capmap, vis, scope){
+    return function(names){
+        var s='';
+        for(var k=0;k<vis.length;k++){ var ci=vis[k];
+            var sum=0; for(var nn=0;nn<names.length;nn++){ var b=capmap[names[nn]]; if(b) sum+=b[ci]*capStakeMul(names[nn],scope); }
+            var v=prjConvCap(sum);
+            s+='<td>'+(v==null?'—':formatNum(v,false))+'</td>';
+        }
+        return s;
+    };
+}
+function capBuildTree(viewBy, leaves, capmap, vis, cellsFn){
+    function nm(p){ return p.name; }
+    function groupBy(list,key){ var g={}; list.forEach(function(p){ (g[p[key]]=g[p[key]]||[]).push(p); }); return g; }
+    function tot(names){ var s=0; for(var i=0;i<names.length;i++){ var b=capmap[names[i]]; if(b) for(var k=0;k<vis.length;k++) s+=b[vis[k]]; } return s; }
+    function byTotDesc(a,b){ return tot([b.name])-tot([a.name]); }
+    function aggRow(cls,key,label,n,names,exp){
+        return '<tr class="'+cls+'" data-cap-x="'+prjEsc(key)+'"><td><span class="prj-arrow'+(exp?' expanded':'')+'">&#9654;</span> '
+            + prjEsc(label)+' <span style="color:#9395A2;font-weight:normal;">('+n+')</span></td>'+cellsFn(names)+'</tr>';
+    }
+    function projRow(p){ return '<tr class="prj-row-project"><td>'+prjEsc(p.name)+'</td>'+cellsFn([p.name])+'</tr>'; }
+    var body='';
+    if(viewBy==='project'){
+        leaves.slice().sort(byTotDesc).forEach(function(p){ body+=projRow(p); });
+    } else if(viewBy==='country'){
+        var byC=groupBy(leaves,'country');
+        Object.keys(byC).sort(function(a,b){ return tot(byC[b].map(nm))-tot(byC[a].map(nm)); }).forEach(function(c){
+            var cExp=!!capExpanded['c|'+c];
+            body+=aggRow('prj-row-country','c|'+c,c,byC[c].length,byC[c].map(nm),cExp);
+            if(cExp) byC[c].slice().sort(byTotDesc).forEach(function(p){ body+=projRow(p); });
+        });
+    } else {
+        var byR=groupBy(leaves,'region');
+        PRJ.region_order.forEach(function(region){
+            var rp=byR[region]; if(!rp||!rp.length) return;
+            var rExp=!!capExpanded['r|'+region];
+            body+=aggRow('prj-row-region','r|'+region,region,rp.length,rp.map(nm),rExp);
+            if(!rExp) return;
+            var byC=groupBy(rp,'country');
+            Object.keys(byC).sort(function(a,b){ return tot(byC[b].map(nm))-tot(byC[a].map(nm)); }).forEach(function(c){
+                var ckey='r|'+region+'|'+c; var cExp=!!capExpanded[ckey];
+                body+=aggRow('prj-row-country',ckey,c,byC[c].length,byC[c].map(nm),cExp);
+                if(cExp) byC[c].slice().sort(byTotDesc).forEach(function(p){ body+=projRow(p); });
+            });
+        });
+    }
+    var allNames=leaves.map(nm);
+    if(allNames.length) body+='<tr class="prj-row-total"><td>Total ('+allNames.length+')</td>'+cellsFn(allNames)+'</tr>';
+    return body;
+}
+
+function capRenderTables(){
+    if(!PRJ || !PRJ.capacity) return;
+    var period=document.getElementById('capPeriod').value;
+    var viewBy=document.getElementById('capViewBy').value, ul=capUnitLabel();
+    var net=capNetActive('table');
+    [['risked','capRkHead','capRkBody','Risked'],['unrisked','capUnrHead','capUnrBody','Unrisked']].forEach(function(m){
+        var measure=m[0], view=PRJ.capacity[measure][period]; if(!view) return;
+        var vis=prjVisIndices(view, document.getElementById('capFrom'), document.getElementById('capTo'));
+        var capmap={}; view.rows.forEach(function(r){ capmap[r.label]=r.base; });
+        var leaves=prjFiltered().filter(function(p){ return capmap[p.name]; });
+        var hHtml='<tr><th>'+m[3]+(net?' — net':'')+' ('+ul+')<span class="unit-label"> ('+period+')</span></th>';
+        for(var i=0;i<vis.length;i++) hHtml+='<th>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
+        document.getElementById(m[1]).innerHTML=hHtml+'</tr>';
+        var body=capBuildTree(viewBy, leaves, capmap, vis, capCells(capmap, vis, 'table'));
+        if(!body) body='<tr><td colspan="'+(vis.length+1)+'" style="text-align:center;color:#9395A2;padding:20px;">No projects match the current filters.</td></tr>';
+        document.getElementById(m[2]).innerHTML=body;
+    });
+}
+
+function capStackOne(measure, canvasId, titleId, legendId, prevChart){
+    var period=capChartPeriodVal(), view=PRJ.capacity[measure][period]; if(!view) return prevChart;
+    var vis=prjVisIndices(view, capChartFromEl(), capChartToEl());
+    var viewBy=capChartViewBy(), unit=prjUnit(), ul=capUnitLabel(), scope=capChartScope();
+    var capmap={}; view.rows.forEach(function(r){ capmap[r.label]=r.base; });
+    var leaves=prjFilteredFor(scope).filter(function(p){ return capmap[p.name]; });
+    var groups=[];
+    if(viewBy==='project'){ leaves.forEach(function(p){ groups.push({label:p.name,names:[p.name]}); }); }
+    else if(viewBy==='country'){ var byC={}; leaves.forEach(function(p){ (byC[p.country]=byC[p.country]||[]).push(p.name); }); Object.keys(byC).forEach(function(c){ groups.push({label:c,names:byC[c]}); }); }
+    else { var byR={}; leaves.forEach(function(p){ (byR[p.region]=byR[p.region]||[]).push(p.name); }); PRJ.region_order.forEach(function(r){ if(byR[r]) groups.push({label:r,names:byR[r]}); }); }
+    var labels=[]; for(var k=0;k<vis.length;k++) labels.push(view.short_columns[vis[k]]||view.columns[vis[k]]);
+    var datasets=[];
+    for(var g=0;g<groups.length;g++){
+        var grp=groups[g], data=[];
+        for(var k=0;k<vis.length;k++){ var ci=vis[k];
+            var s=0; for(var nn=0;nn<grp.names.length;nn++){ var b=capmap[grp.names[nn]]; if(b) s+=b[ci]*capStakeMul(grp.names[nn],scope); }
+            var v=prjConvCap(s); data.push((v==null||v<0)?0:v); }
+        var color=(viewBy==='region')?(PRJ.region_colors[grp.label]||PRJ_OWNER_COLORS[g%PRJ_OWNER_COLORS.length]):PRJ_OWNER_COLORS[g%PRJ_OWNER_COLORS.length];
+        datasets.push({ label:grp.label, data:data, backgroundColor:fadeColor(color,0.8), borderColor:color, borderWidth:1, fill:(g===0)?'origin':'-1', stack:'cap', tension:0.2, pointRadius:0 });
+    }
+    var ttl=document.getElementById(titleId); if(ttl) ttl.textContent=(measure==='risked'?'Risked':'Unrisked')+' Capacity ('+ul+')';
+    var opts=chartOptionsStacked(unit); opts.scales.y.title.text=ul;
+    if(prevChart) prevChart.destroy();
+    var c=document.getElementById(canvasId); if(!c) return null;
+    var ch=new Chart(c,{type:'line',data:{labels:labels,datasets:datasets},options:opts});
+    renderHtmlLegend(ch, legendId, {});
+    return ch;
+}
+function capCharts(){
+    if(!PRJ || !PRJ.capacity) return;
+    capRkChart =capStackOne('risked',  'capRkCanvas', 'capRkTitle', 'capRkLegend', capRkChart);
+    capUnrChart=capStackOne('unrisked','capUnrCanvas','capUnrTitle','capUnrLegend',capUnrChart);
+}
+function capRender(){ if(!PRJ||!PRJ.capacity) return; capRenderTables(); capCharts(); }
+
+function capInit(){
+    if(!PRJ || !PRJ.capacity) return;
+    capNetMode='gross'; capExpanded={}; capChartLinked=true;
+    prjFilters.capchart={status:[],region:[],country:[],company:[],project:[]};
+    if(capUnrChart){ capUnrChart.destroy(); capUnrChart=null; }
+    if(capRkChart){ capRkChart.destroy(); capRkChart=null; }
+    prjBuildFilters('capchart');
+    capCloneChartControls();
+    capPopulateRange();
+    capSetLink(true);
+    capUpdateNetToggle();
+}
+
+// Capacity tree expand toggles (both tables share capExpanded -> re-render both).
+document.addEventListener('click', function(e){
+    var tr=e.target.closest('tr[data-cap-x]'); if(!tr) return;
+    var key=tr.getAttribute('data-cap-x');
+    capExpanded[key]=!capExpanded[key];
+    capRenderTables();
+});
+
 /* === EVENTS === */
 function onPeriodChange() {
     updateRangeSelectors();
@@ -4901,6 +5232,7 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '<div class="lng-subtab-bar" id="lngSubtabBar">\n'
     html += '    <button class="lng-subtab-btn active" id="lngSubOverview" onclick="lngSetSubtab(\'overview\')">Overview</button>\n'
     html += '    <button class="lng-subtab-btn" id="lngSubOutlook" onclick="lngSetSubtab(\'outlook\')">Supply Outlook</button>\n'
+    html += '    <button class="lng-subtab-btn" id="lngSubCapacity" onclick="lngSetSubtab(\'capacity\')">Capacity</button>\n'
     html += '    <button class="lng-subtab-btn" id="lngSubProjects" onclick="lngSetSubtab(\'projects\')">Projects</button>\n'
     html += '</div>\n\n'
 
@@ -5243,6 +5575,80 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '  <div class="prj-pane" id="prjPaneProjects">\n'
     html += '    <div class="prj-table-container">\n'
     html += '      <table class="prj-table"><thead id="prjTableHead"></thead><tbody id="prjTableBody"></tbody></table>\n'
+    html += '    </div>\n'
+    html += '  </div>\n'
+    # Capacity pane — two tables (Risked | Unrisked) + two stacked-area charts.
+    html += '  <div class="prj-pane" id="prjPaneCapacity">\n'
+    html += '    <div class="prj-outlook-controls">\n'
+    html += '      <div class="control-group"><label>View by</label>\n'
+    html += '        <select id="capViewBy" onchange="capRender()">\n'
+    html += '          <option value="region" selected>Region</option>\n'
+    html += '          <option value="country">Country</option>\n'
+    html += '          <option value="project">Project</option>\n'
+    html += '        </select>\n'
+    html += '      </div>\n'
+    html += '      <div class="control-group"><label>Period</label>\n'
+    html += '        <select id="capPeriod" onchange="capOnPeriod()">\n'
+    html += '          <option value="Annual CY" selected>Annual (Calendar Year)</option>\n'
+    html += '          <option value="Gas Year">Annual (Gas Year)</option>\n'
+    html += '          <option value="Winter">Winter (Oct-Mar)</option>\n'
+    html += '          <option value="Summer">Summer (Apr-Sep)</option>\n'
+    html += '        </select>\n'
+    html += '      </div>\n'
+    html += '      <div class="control-group"><label>From</label><select id="capFrom" onchange="capRender()"></select></div>\n'
+    html += '      <div class="control-group"><label>To</label><select id="capTo" onchange="capRender()"></select></div>\n'
+    html += '      <div class="control-group prj-net-group" id="capNetToggle" style="display:none;">\n'
+    html += '        <label>Basis</label>\n'
+    html += '        <div class="net-toggle-row">\n'
+    html += '          <div class="growth-toggle">\n'
+    html += '            <button id="capGrossBtn" class="active" onclick="capSetNetMode(\'gross\')">Gross</button>\n'
+    html += '            <button id="capNetBtn" onclick="capSetNetMode(\'net\')">Net</button>\n'
+    html += '          </div>\n'
+    html += '          <span class="prj-net-note" id="capNetNote" style="display:none;">Net = gross &times; selected companies&rsquo; stake.</span>\n'
+    html += '        </div>\n'
+    html += '      </div>\n'
+    html += '    </div>\n'
+    # Two capacity tables side by side (Risked left, Unrisked right).
+    html += '    <div class="cap-tables">\n'
+    html += '      <div class="cap-table-block">\n'
+    html += '        <div class="cap-block-title">Risked capacity</div>\n'
+    html += '        <div class="prj-table-container"><table class="prj-table prj-outlook-table"><thead id="capRkHead"></thead><tbody id="capRkBody"></tbody></table></div>\n'
+    html += '      </div>\n'
+    html += '      <div class="cap-table-block">\n'
+    html += '        <div class="cap-block-title">Unrisked capacity</div>\n'
+    html += '        <div class="prj-table-container"><table class="prj-table prj-outlook-table"><thead id="capUnrHead"></thead><tbody id="capUnrBody"></tbody></table></div>\n'
+    html += '      </div>\n'
+    html += '    </div>\n'
+    # Chart filters: link-to-table toggle + (when unlinked) an independent filter set.
+    html += '    <div class="prj-chart-filters">\n'
+    html += '      <div class="prj-chart-filters-head">\n'
+    html += '        <span class="lng-block-title">Chart filters</span>\n'
+    html += '        <button class="prj-link-btn active" id="capLinkBtn" onclick="capToggleLink()">✓ Linked to table filters</button>\n'
+    html += '      </div>\n'
+    html += '      <div class="prj-chart-filter-controls" id="capChartFilterControls">\n'
+    html += '        <div class="prj-filter-group"><label>View by</label><select id="capcViewBy" onchange="capCharts()"></select></div>\n'
+    html += '        <div class="prj-filter-group"><label>Period</label><select id="capcPeriod" onchange="capcOnPeriod()"></select></div>\n'
+    html += '        <div class="prj-filter-group"><label>From</label><select id="capcFrom" onchange="capCharts()"></select></div>\n'
+    html += '        <div class="prj-filter-group"><label>To</label><select id="capcTo" onchange="capCharts()"></select></div>\n'
+    for lbl, fid in [("Status", "capcFilterStatus"), ("Region", "capcFilterRegion"),
+                     ("Country", "capcFilterCountry"), ("Company", "capcFilterCompany"),
+                     ("Project", "capcFilterProject")]:
+        html += f'        <div class="prj-filter-group"><label>{lbl}</label><div class="multi-select" id="{fid}"></div></div>\n'
+    html += '        <button class="prj-filter-reset" onclick="prjResetFilters(\'capchart\')">Reset</button>\n'
+    html += '      </div>\n'
+    html += '    </div>\n'
+    # Two capacity charts side by side (Risked left, Unrisked right).
+    html += '    <div class="prj-outlook-charts">\n'
+    html += '      <div class="grid-quad">\n'
+    html += '        <div class="chart-controls prj-chart-head"><div class="chart-title-inline" id="capRkTitle">Risked Capacity</div></div>\n'
+    html += '        <div class="chart-canvas-wrap"><canvas id="capRkCanvas"></canvas></div>\n'
+    html += '        <div class="custom-legend" id="capRkLegend"></div>\n'
+    html += '      </div>\n'
+    html += '      <div class="grid-quad">\n'
+    html += '        <div class="chart-controls prj-chart-head"><div class="chart-title-inline" id="capUnrTitle">Unrisked Capacity</div></div>\n'
+    html += '        <div class="chart-canvas-wrap"><canvas id="capUnrCanvas"></canvas></div>\n'
+    html += '        <div class="custom-legend" id="capUnrLegend"></div>\n'
+    html += '      </div>\n'
     html += '    </div>\n'
     html += '  </div>\n'
     html += '</div>\n\n'

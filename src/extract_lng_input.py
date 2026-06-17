@@ -96,6 +96,11 @@ EXP_DATE_ROW = 4
 EXP_COL0, EXP_COL1 = 6, 293            # data cols F..(Dec 2040), 288 months
 REP_R0, REP_R1 = 165, 396              # 'Reported (mmt)' project rows (165) .. before Grand total
 UTIL_R0, UTIL_R1 = 874, 1110           # 'Utilisation (%)' project rows
+UNRCAP_R0, UNRCAP_R1 = 404, 637        # 'Unrisked Capacity (mmtpa)' project rows
+RKCAP_R0, RKCAP_R1 = 639, 872          # 'Risked Capacity (mmtpa)' project rows
+                                       # Each block has a MAIN-named summary row carrying the
+                                       # model's phased train-by-train total; matched by name
+                                       # (train rows differ in name and are ignored).
 
 
 def _clean(v):
@@ -138,6 +143,20 @@ def build_projects(src, out):
             continue
         util_by_name[name] = [me.cell(r, c).value for c in range(EXP_COL0, EXP_COL1 + 1)]
 
+    # --- Unrisked / Risked Capacity series (mmtpa), keyed by main name. The model
+    #     already carries the phased train-by-train total on each main-named row,
+    #     so no derivation is needed downstream — end-of-period sampling only. ---
+    def cap_block(r0, r1):
+        d = {}
+        for r in range(r0, r1 + 1):
+            name = _clean(me.cell(r, 1).value)
+            if not name or name in COUNTRIES or name in ("Grand total",):
+                continue
+            d.setdefault(name, [me.cell(r, c).value for c in range(EXP_COL0, EXP_COL1 + 1)])
+        return d
+    unrcap_by_name = cap_block(UNRCAP_R0, UNRCAP_R1)
+    rkcap_by_name = cap_block(RKCAP_R0, RKCAP_R1)
+
     # --- Walk the Reported section: accumulate project rows, assign country on the
     #     country aggregate row; keep mains (M) only. ---
     dates = [me.cell(EXP_DATE_ROW, c).value for c in range(EXP_COL0, EXP_COL1 + 1)]
@@ -162,7 +181,9 @@ def build_projects(src, out):
                     else (unr if isinstance(unr, (int, float)) else None)  # producing: blank CoS -> 1.0
                 projects.append({
                     "name": pname, "country": country, "region": REGION_OF.get(country, country),
-                    "prod": series, "util": util_by_name.get(pname), **m, "risked_mmt": risked,
+                    "prod": series, "util": util_by_name.get(pname),
+                    "unrcap": unrcap_by_name.get(pname), "rkcap": rkcap_by_name.get(pname),
+                    **m, "risked_mmt": risked,
                 })
             pending = []
         # else: regional/grand-total rows -> ignore (and reset so they don't leak)
@@ -192,7 +213,8 @@ def build_projects(src, out):
             ws.cell(row=i, column=c, value=v)
 
     # --- Write series sheets (row 1 = dates from col B; col A = project name) ---
-    for sheet_name, key in [("LNG Proj Production", "prod"), ("LNG Proj Utilisation", "util")]:
+    for sheet_name, key in [("LNG Proj Production", "prod"), ("LNG Proj Utilisation", "util"),
+                            ("LNG Proj Unrisked Cap", "unrcap"), ("LNG Proj Risked Cap", "rkcap")]:
         sh = out.create_sheet(sheet_name)
         for j, d in enumerate(dates, start=2):
             sh.cell(row=1, column=j, value=d)
