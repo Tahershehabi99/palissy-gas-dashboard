@@ -4280,7 +4280,7 @@ function prjUnitCfg(){ return PRJ.unit_config[prjUnit()] || PRJ.unit_config[PRJ.
 function prjUnitLabel(){ var c=prjUnitCfg(); return c.isRate?c.rateLabel:c.volLabel; }
 function prjConvCap(mmt){ if(mmt==null||mmt===''||isNaN(mmt)) return null; var c=prjUnitCfg(); return c.isRate?(mmt/365.25)*c.rateFactor:mmt*c.volFactor; }
 function prjConvFlow(mmt,days){ if(mmt==null||isNaN(mmt)) return 0; var c=prjUnitCfg(); return c.isRate?(mmt/days)*c.rateFactor:mmt*c.volFactor; }
-function prjOnUnitChange(){ prjRenderSummary(); prjRenderTree(); prjOutlookRender(); }
+function prjOnUnitChange(){ prjRenderSummary(); prjRenderTree(); prjOutlookRender(); capRender(); }
 
 function prjEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
 function prjNum(v,dec){ if(v==null||v===''||isNaN(v)) return '—'; return Number(v).toFixed(dec).replace(/\B(?=(\d{3})+(?!\d))/g,','); }
@@ -4880,12 +4880,21 @@ var capUnrChart = null, capRkChart = null;
 
 // Capacity label: mmt -> "mmtpa"; rate units keep their daily label; other volume
 // units become per-annum ("bcf/yr"). Capacity is an annual figure.
-function capUnitLabel(){
-    var u=prjUnit(), c=prjUnitCfg();
+function capUnitLabelFor(u){
+    var c=PRJ.unit_config[u]||PRJ.unit_config[PRJ.default_unit];
     if(u==='mmt') return 'mmtpa';
     if(c.isRate) return c.rateLabel;
     return c.volLabel+'/yr';
 }
+function capUnitLabel(){ return capUnitLabelFor(prjUnit()); }   // tables: global unit
+// Annual-rate conversion for an explicit unit key (charts may use their own unit).
+function capConvFor(mmt,u){
+    if(mmt==null||mmt===''||isNaN(mmt)) return null;
+    var c=PRJ.unit_config[u]||PRJ.unit_config[PRJ.default_unit];
+    return c.isRate?(mmt/365.25)*c.rateFactor:mmt*c.volFactor;
+}
+// Charts follow the global (table) unit when linked, else their own capcUnit.
+function capChartUnit(){ if(capChartLinked) return prjUnit(); var el=document.getElementById('capcUnit'); return (el&&el.value)?el.value:prjUnit(); }
 
 /* ---- Net (stake-weighted) helpers — net applies to ALL buckets for capacity
         (a level is well-defined historically, unlike the forward-only production
@@ -4964,6 +4973,7 @@ function capSetLink(linked){
         ['status','region','country','company','project'].forEach(function(d){ prjFilters.capchart[d]=prjFilters.table[d].slice(); });
         var vb=document.getElementById('capcViewBy'); if(vb) vb.value=document.getElementById('capViewBy').value;
         var pd=document.getElementById('capcPeriod'); if(pd) pd.value=document.getElementById('capPeriod').value;
+        var cu=document.getElementById('capcUnit'); if(cu) cu.value=prjUnit();
         capcPopulateRange(true);
         prjUpdateFilterUI('capchart');
     }
@@ -5045,7 +5055,7 @@ function capRenderTables(){
 function capStackOne(measure, canvasId, titleId, legendId, prevChart){
     var period=capChartPeriodVal(), view=PRJ.capacity[measure][period]; if(!view) return prevChart;
     var vis=prjVisIndices(view, capChartFromEl(), capChartToEl());
-    var viewBy=capChartViewBy(), unit=prjUnit(), ul=capUnitLabel(), scope=capChartScope();
+    var viewBy=capChartViewBy(), unit=capChartUnit(), ul=capUnitLabelFor(unit), scope=capChartScope();
     var capmap={}; view.rows.forEach(function(r){ capmap[r.label]=r.base; });
     var leaves=prjFilteredFor(scope).filter(function(p){ return capmap[p.name]; });
     var groups=[];
@@ -5058,7 +5068,7 @@ function capStackOne(measure, canvasId, titleId, legendId, prevChart){
         var grp=groups[g], data=[];
         for(var k=0;k<vis.length;k++){ var ci=vis[k];
             var s=0; for(var nn=0;nn<grp.names.length;nn++){ var b=capmap[grp.names[nn]]; if(b) s+=b[ci]*capStakeMul(grp.names[nn],scope); }
-            var v=prjConvCap(s); data.push((v==null||v<0)?0:v); }
+            var v=capConvFor(s,unit); data.push((v==null||v<0)?0:v); }
         var color=(viewBy==='region')?(PRJ.region_colors[grp.label]||PRJ_OWNER_COLORS[g%PRJ_OWNER_COLORS.length]):PRJ_OWNER_COLORS[g%PRJ_OWNER_COLORS.length];
         datasets.push({ label:grp.label, data:data, backgroundColor:fadeColor(color,0.8), borderColor:color, borderWidth:1, fill:(g===0)?'origin':'-1', stack:'cap', tension:0.2, pointRadius:0 });
     }
@@ -5084,6 +5094,8 @@ function capInit(){
     if(capUnrChart){ capUnrChart.destroy(); capUnrChart=null; }
     if(capRkChart){ capRkChart.destroy(); capRkChart=null; }
     prjBuildFilters('capchart');
+    var cu=document.getElementById('capcUnit');
+    if(cu){ cu.innerHTML=''; PRJ.units.forEach(function(u){ cu.innerHTML+='<option value="'+u+'"'+(u===PRJ.default_unit?' selected':'')+'>'+u+'</option>'; }); }
     capCloneChartControls();
     capPopulateRange();
     capSetLink(true);
@@ -5626,6 +5638,7 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '        <button class="prj-link-btn active" id="capLinkBtn" onclick="capToggleLink()">✓ Linked to table filters</button>\n'
     html += '      </div>\n'
     html += '      <div class="prj-chart-filter-controls" id="capChartFilterControls">\n'
+    html += '        <div class="prj-filter-group"><label>Unit</label><select id="capcUnit" onchange="capCharts()"></select></div>\n'
     html += '        <div class="prj-filter-group"><label>View by</label><select id="capcViewBy" onchange="capCharts()"></select></div>\n'
     html += '        <div class="prj-filter-group"><label>Period</label><select id="capcPeriod" onchange="capcOnPeriod()"></select></div>\n'
     html += '        <div class="prj-filter-group"><label>From</label><select id="capcFrom" onchange="capCharts()"></select></div>\n'
