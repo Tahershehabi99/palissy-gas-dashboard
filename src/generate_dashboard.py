@@ -1875,7 +1875,10 @@ body.projects-tab .lng-subtab-bar { display: flex; }
 @media (max-width: 1100px) { .cap-tables { grid-template-columns: 1fr; } }
 /* Utilisation sub-tab */
 .util-note { font-size: 11px; font-style: italic; color: """ + grey + """; align-self: flex-end; padding-bottom: 6px; }
-.util-heatmap-wrap { overflow: auto; max-height: 340px; border: 1px solid """ + border + """; border-radius: 8px; }
+.util-heatmap-section { margin-top: 16px; }
+.util-hm-head { display: flex; gap: 18px; align-items: flex-end; }
+.util-heatmap-wrap { overflow: auto; max-height: 380px; border: 1px solid """ + border + """; border-radius: 0 0 8px 8px; background: #fff; }
+table.util-heatmap td.util-hm-empty { background: #f6f7fa; color: #c2c5d2; }
 table.util-heatmap { border-collapse: separate; border-spacing: 2px; font-size: 11px; width: 100%; }
 table.util-heatmap th {
     position: sticky; top: 0; background: #fff; z-index: 2; font-size: 10px; font-weight: bold;
@@ -5236,8 +5239,15 @@ document.addEventListener('click', function(e){
    ========================================================================== */
 var utilExpanded = {};
 var utilChartLinked = true;
-var utilRightMode = 'trend';    // right chart: 'trend' (multi-line) | 'heatmap'
+var utilHmPalette = 'rdylgn';   // heatmap colour scale: 'rdylgn' | 'heat' | 'blue'
+var utilHeatSort = 'default';   // heatmap row order: 'default' | 'util' (highest first)
 var utilRangeChart = null, utilTrendChart = null;
+// Heatmap colour scales (low->high utilisation). Multi-hue for clear separation.
+var UTIL_PALETTES = {
+    rdylgn: [[0,[215,48,39]],[0.25,[252,141,89]],[0.5,[255,255,191]],[0.75,[145,207,96]],[1,[26,152,80]]],
+    heat:   [[0,[255,255,204]],[0.3,[254,204,92]],[0.6,[253,141,60]],[0.8,[240,59,32]],[1,[189,0,38]]],
+    blue:   [[0,[247,251,255]],[0.5,[107,174,214]],[1,[8,48,107]]]
+};
 
 function utilWeighted(byName, names, ci){
     var num=0, den=0;
@@ -5253,6 +5263,19 @@ function utilGroups(viewBy, leaves){
     return groups;
 }
 function utilGroupColor(viewBy, label, g){ return (viewBy==='region') ? (PRJ.region_colors[label]||PRJ_OWNER_COLORS[g%PRJ_OWNER_COLORS.length]) : PRJ_OWNER_COLORS[g%PRJ_OWNER_COLORS.length]; }
+// Window-average weighted utilisation for a group (used for the heatmap sort).
+function utilWindowAvg(byName, names, vis){
+    var num=0, den=0;
+    for(var i=0;i<names.length;i++){ var r=byName[names[i]]; if(!r) continue;
+        for(var k=0;k<vis.length;k++){ var u=r.base[vis[k]], w=r.w[vis[k]]; if(u==null) continue; num+=u*w; den+=w; } }
+    return den>1e-12 ? num/den : null;
+}
+// Keep only projects that are online somewhere in the visible window (>=1 value);
+// projects that never come online in the selected range are dropped entirely.
+function utilInWindow(leaves, byName, vis){
+    return leaves.filter(function(p){ var r=byName[p.name]; if(!r) return false;
+        for(var k=0;k<vis.length;k++){ if(r.base[vis[k]]!=null) return true; } return false; });
+}
 
 /* ---- One table: capacity-weighted utilisation %, region/country/project tree.
         Sort by total weight (capacity) so the biggest plants lead. ---- */
@@ -5302,7 +5325,7 @@ function utilRenderTable(){
     var vis=prjVisIndices(view, document.getElementById('utilFrom'), document.getElementById('utilTo'));
     var viewBy=document.getElementById('utilViewBy').value;
     var byName={}; view.rows.forEach(function(r){ byName[r.label]=r; });
-    var leaves=prjFiltered().filter(function(p){ return byName[p.name]; });
+    var leaves=utilInWindow(prjFiltered().filter(function(p){ return byName[p.name]; }), byName, vis);
     var hHtml='<tr><th>Utilisation<span class="unit-label"> ('+period+')</span></th>';
     for(var i=0;i<vis.length;i++) hHtml+='<th>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
     document.getElementById('utilHead').innerHTML=hHtml+'</tr>';
@@ -5405,7 +5428,7 @@ function utilTrendRender(){
     var vis=prjVisIndices(view, utilChartFromEl(), utilChartToEl());
     var viewBy=utilChartViewBy(), scope=utilChartScope();
     var byName={}; view.rows.forEach(function(r){ byName[r.label]=r; });
-    var leaves=prjFilteredFor(scope).filter(function(p){ return byName[p.name]; });
+    var leaves=utilInWindow(prjFilteredFor(scope).filter(function(p){ return byName[p.name]; }), byName, vis);
     var groups=utilGroups(viewBy, leaves);
     var labels=[]; for(var k=0;k<vis.length;k++) labels.push(view.short_columns[vis[k]]||view.columns[vis[k]]);
     var datasets=groups.map(function(grp,g){
@@ -5425,7 +5448,7 @@ function utilTrendRender(){
                  pointRadius:pr, pointBackgroundColor:pbg, pointBorderColor:pbd, pointBorderWidth:1.5,
                  tension:0.25, fill:false, spanGaps:false };
     });
-    document.getElementById('utilRightTitle').textContent='Utilisation Trend (%)';
+    document.getElementById('utilTrendTitle').textContent='Utilisation Trend (%)';
     var opts=chartOptionsLine('mmt'); opts.scales.y.title.text='Utilisation (%)'; opts.scales.y.ticks=opts.scales.y.ticks||{}; opts.scales.y.ticks.callback=function(v){return v+'%';};
     if(utilTrendChart){ utilTrendChart.destroy(); utilTrendChart=null; }
     var c=document.getElementById('utilTrendCanvas'); if(!c) return;
@@ -5433,47 +5456,53 @@ function utilTrendRender(){
     renderHtmlLegend(utilTrendChart,'utilTrendLegend',{});
 }
 
-/* ---- Right chart B: heatmap (groups x periods, colour = utilisation) ---- */
+/* ---- Heatmap (groups x periods, colour = utilisation). Always shown full-width
+        below the two charts; a Colours scale + a Default|Highest-util sort. ---- */
 function utilHmColor(pct){
-    var t=Math.max(0,Math.min(1.2,pct/100))/1.2;   // 0..120%+ -> 0..1
-    var a=[238,240,246], b=[39,41,98];              // light grey -> Palissy dark blue
-    return 'rgb('+Math.round(a[0]+(b[0]-a[0])*t)+','+Math.round(a[1]+(b[1]-a[1])*t)+','+Math.round(a[2]+(b[2]-a[2])*t)+')';
+    var pal=UTIL_PALETTES[utilHmPalette]||UTIL_PALETTES.rdylgn;
+    var t=Math.max(0,Math.min(1,pct/100));           // 0..100%+ (over 100 clamps to top)
+    var i=0; while(i<pal.length-1 && t>pal[i+1][0]) i++;
+    var a=pal[i], b=pal[Math.min(i+1,pal.length-1)];
+    var span=(b[0]-a[0])||1, f=(t-a[0])/span;
+    var r=Math.round(a[1][0]+(b[1][0]-a[1][0])*f), g=Math.round(a[1][1]+(b[1][1]-a[1][1])*f), bl=Math.round(a[1][2]+(b[1][2]-a[1][2])*f);
+    return [r,g,bl];
 }
+function utilHmText(rgb){ return (0.299*rgb[0]+0.587*rgb[1]+0.114*rgb[2]) < 150 ? '#fff' : '#272962'; }
 function utilHeatmapRender(){
     var period=utilChartPeriodVal(), view=PRJ.utilisation.views[period]; if(!view) return;
     var vis=prjVisIndices(view, utilChartFromEl(), utilChartToEl());
     var viewBy=utilChartViewBy(), scope=utilChartScope();
     var byName={}; view.rows.forEach(function(r){ byName[r.label]=r; });
-    var leaves=prjFilteredFor(scope).filter(function(p){ return byName[p.name]; });
+    var leaves=utilInWindow(prjFilteredFor(scope).filter(function(p){ return byName[p.name]; }), byName, vis);
     var groups=utilGroups(viewBy, leaves);
-    document.getElementById('utilRightTitle').textContent='Utilisation Heatmap (%)';
+    if(utilHeatSort==='util'){
+        groups.forEach(function(grp){ var a=utilWindowAvg(byName,grp.names,vis); grp._k=(a==null?-1:a); });
+        groups.sort(function(a,b){ return b._k-a._k; });   // highest utilisation first
+    }
+    document.getElementById('utilHeatTitle').textContent='Utilisation Heatmap (%)';
     var h='<table class="util-heatmap"><thead><tr><th class="util-hm-corner"></th>';
     for(var k=0;k<vis.length;k++) h+='<th>'+(view.short_columns[vis[k]]||view.columns[vis[k]])+'</th>';
     h+='</tr></thead><tbody>';
     groups.forEach(function(grp){
         h+='<tr><td class="util-hm-label" title="'+prjEsc(grp.label)+'">'+prjEsc(grp.label)+'</td>';
         for(var k=0;k<vis.length;k++){ var v=utilWeighted(byName,grp.names,vis[k]);
-            if(v==null){ h+='<td class="util-hm-cell" style="background:#f6f7fa;color:#c2c5d2;">·</td>'; }
-            else { var pct=v*100; h+='<td class="util-hm-cell" style="background:'+utilHmColor(pct)+';color:'+(pct>52?'#fff':'#272962')+';">'+Math.round(pct)+'</td>'; }
+            if(v==null){ h+='<td class="util-hm-cell util-hm-empty">·</td>'; }
+            else { var pct=v*100, rgb=utilHmColor(pct); h+='<td class="util-hm-cell" style="background:rgb('+rgb[0]+','+rgb[1]+','+rgb[2]+');color:'+utilHmText(rgb)+';">'+Math.round(pct)+'</td>'; }
         }
         h+='</tr>';
     });
     h+='</tbody></table>';
-    if(!groups.length) h='<div style="text-align:center;color:#9395A2;padding:20px;">No projects match the current filters.</div>';
+    if(!groups.length) h='<div style="text-align:center;color:#9395A2;padding:20px;">No projects are online in the selected range.</div>';
     document.getElementById('utilHeatmap').innerHTML=h;
 }
-function utilSetRightMode(m){
-    utilRightMode=m;
-    var t=document.getElementById('utilRightTrendBtn'), hb=document.getElementById('utilRightHeatBtn');
-    if(t) t.className=m==='trend'?'active':''; if(hb) hb.className=m==='heatmap'?'active':'';
-    var tw=document.getElementById('utilTrendWrap'), hm=document.getElementById('utilHeatmap');
-    if(tw) tw.style.display=m==='trend'?'':'none';
-    if(hm) hm.style.display=m==='heatmap'?'':'none';
-    var lg=document.getElementById('utilTrendLegend'); if(lg) lg.style.display=m==='trend'?'':'none';
-    utilRenderRight();
+function utilSetPalette(){ var s=document.getElementById('utilHmPalette'); if(s) utilHmPalette=s.value; utilHeatmapRender(); }
+function utilSetHeatSort(m){
+    utilHeatSort=m;
+    var d=document.getElementById('utilHmSortDefault'), u=document.getElementById('utilHmSortUtil');
+    if(d) d.className=m==='default'?'active':''; if(u) u.className=m==='util'?'active':'';
+    utilHeatmapRender();
 }
-function utilRenderRight(){ if(utilRightMode==='heatmap') utilHeatmapRender(); else utilTrendRender(); }
-function utilCharts(){ if(!PRJ||!PRJ.utilisation) return; utilRangeRender(); utilRenderRight(); }
+function utilCharts(){ if(!PRJ||!PRJ.utilisation) return; utilRangeRender(); utilTrendRender(); utilHeatmapRender(); }
 function utilRender(){ if(!PRJ||!PRJ.utilisation) return; utilRenderTable(); utilCharts(); }
 
 function utilInit(){
@@ -5482,12 +5511,14 @@ function utilInit(){
     prjFilters.utilchart={status:[],region:[],country:[],company:[],project:[]};
     if(utilRangeChart){ utilRangeChart.destroy(); utilRangeChart=null; }
     if(utilTrendChart){ utilTrendChart.destroy(); utilTrendChart=null; }
+    utilHmPalette='rdylgn'; utilHeatSort='default';
     prjBuildFilters('utilchart');
     utilCloneChartControls();
     utilPopulateRange();
     utilPopulateLookback();
+    var ps=document.getElementById('utilHmPalette'); if(ps) ps.value=utilHmPalette;
+    utilSetHeatSort('default');
     utilSetLink(true);
-    utilSetRightMode('trend');
 }
 
 // Utilisation tree expand toggles.
@@ -6098,7 +6129,7 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '        <button class="prj-filter-reset" onclick="prjResetFilters(\'utilchart\')">Reset</button>\n'
     html += '      </div>\n'
     html += '    </div>\n'
-    # Charts: seasonality (left) + Trend|Heatmap (right)
+    # Charts: seasonality (left) + trend (right); heatmap full-width below.
     html += '    <div class="prj-outlook-charts">\n'
     html += '      <div class="grid-quad">\n'
     html += '        <div class="chart-controls prj-chart-head">\n'
@@ -6110,16 +6141,31 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '      </div>\n'
     html += '      <div class="grid-quad">\n'
     html += '        <div class="chart-controls prj-chart-head">\n'
-    html += '          <div class="control-group"><div class="value-toggle">\n'
-    html += '            <button id="utilRightTrendBtn" class="active" onclick="utilSetRightMode(\'trend\')">Trend</button>\n'
-    html += '            <button id="utilRightHeatBtn" onclick="utilSetRightMode(\'heatmap\')">Heatmap</button>\n'
-    html += '          </div></div>\n'
-    html += '          <div class="chart-title-inline" id="utilRightTitle">Utilisation Trend</div>\n'
+    html += '          <div class="chart-title-inline" id="utilTrendTitle">Utilisation Trend</div>\n'
     html += '        </div>\n'
-    html += '        <div class="chart-canvas-wrap" id="utilTrendWrap"><canvas id="utilTrendCanvas"></canvas></div>\n'
-    html += '        <div class="util-heatmap-wrap" id="utilHeatmap" style="display:none;"></div>\n'
+    html += '        <div class="chart-canvas-wrap"><canvas id="utilTrendCanvas"></canvas></div>\n'
     html += '        <div class="custom-legend" id="utilTrendLegend"></div>\n'
     html += '      </div>\n'
+    html += '    </div>\n'
+    # Heatmap — always shown, full width, with a Colours scale + sort toggle.
+    html += '    <div class="util-heatmap-section">\n'
+    html += '      <div class="chart-controls prj-chart-head util-hm-head">\n'
+    html += '        <div class="control-group"><label>Colours</label>\n'
+    html += '          <select id="utilHmPalette" onchange="utilSetPalette()">\n'
+    html += '            <option value="rdylgn" selected>Red &rarr; Green</option>\n'
+    html += '            <option value="heat">Heat (Yellow &rarr; Red)</option>\n'
+    html += '            <option value="blue">Blue scale</option>\n'
+    html += '          </select>\n'
+    html += '        </div>\n'
+    html += '        <div class="control-group"><label>Sort</label>\n'
+    html += '          <div class="value-toggle">\n'
+    html += '            <button id="utilHmSortDefault" class="active" onclick="utilSetHeatSort(\'default\')">Default</button>\n'
+    html += '            <button id="utilHmSortUtil" onclick="utilSetHeatSort(\'util\')">Highest utilisation</button>\n'
+    html += '          </div>\n'
+    html += '        </div>\n'
+    html += '        <div class="chart-title-inline" id="utilHeatTitle">Utilisation Heatmap (%)</div>\n'
+    html += '      </div>\n'
+    html += '      <div class="util-heatmap-wrap" id="utilHeatmap"></div>\n'
     html += '    </div>\n'
     html += '  </div>\n'
     html += '</div>\n\n'
