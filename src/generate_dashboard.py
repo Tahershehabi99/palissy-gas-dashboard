@@ -1875,7 +1875,14 @@ body.projects-tab .lng-subtab-bar { display: flex; }
 @media (max-width: 1100px) { .cap-tables { grid-template-columns: 1fr; } }
 /* Utilisation sub-tab */
 .util-note { font-size: 11px; font-style: italic; color: """ + grey + """; align-self: flex-end; padding-bottom: 6px; }
-.util-heatmap-section { margin-top: 16px; }
+.util-charts-head { display: flex; justify-content: flex-end; margin: 10px 0 2px; }
+.util-collapse-btn {
+    font-family: 'Gotham Book','Segoe UI',Calibri,sans-serif; font-size: 11px; font-weight: bold;
+    padding: 6px 14px; border-radius: 8px; border: 1.5px solid rgba(39,41,98,0.25);
+    background: #fff; color: """ + db + """; cursor: pointer; transition: all 0.15s;
+}
+.util-collapse-btn:hover { border-color: """ + db + """; background: """ + card + """; }
+.util-heatmap-section { margin-top: 14px; }
 .util-hm-head { display: flex; gap: 18px; align-items: flex-end; }
 .util-heatmap-wrap { overflow: auto; max-height: 380px; border: 1px solid """ + border + """; border-radius: 0 0 8px 8px; background: #fff; }
 table.util-heatmap td.util-hm-empty { background: #f6f7fa; color: #c2c5d2; }
@@ -5241,12 +5248,15 @@ var utilExpanded = {};
 var utilChartLinked = true;
 var utilHmPalette = 'rdylgn';   // heatmap colour scale: 'rdylgn' | 'heat' | 'blue'
 var utilHeatSort = 'default';   // heatmap row order: 'default' | 'util' (highest first)
+var utilChartsCollapsed = false;// seasonality + trend charts hidden -> heatmap rises
 var utilRangeChart = null, utilTrendChart = null;
 // Heatmap colour scales (low->high utilisation). Multi-hue for clear separation.
 var UTIL_PALETTES = {
-    rdylgn: [[0,[215,48,39]],[0.25,[252,141,89]],[0.5,[255,255,191]],[0.75,[145,207,96]],[1,[26,152,80]]],
-    heat:   [[0,[255,255,204]],[0.3,[254,204,92]],[0.6,[253,141,60]],[0.8,[240,59,32]],[1,[189,0,38]]],
-    blue:   [[0,[247,251,255]],[0.5,[107,174,214]],[1,[8,48,107]]]
+    rdylgn:  [[0,[215,48,39]],[0.25,[252,141,89]],[0.5,[254,224,139]],[0.75,[145,207,96]],[1,[26,152,80]]],
+    heat:    [[0,[255,255,178]],[0.25,[254,204,92]],[0.5,[253,141,60]],[0.75,[240,59,32]],[1,[189,0,38]]],
+    blue:    [[0,[239,243,255]],[0.33,[158,202,225]],[0.66,[66,146,198]],[1,[8,69,148]]],
+    green:   [[0,[237,248,233]],[0.33,[161,217,155]],[0.66,[65,171,93]],[1,[0,90,50]]],
+    spectral:[[0,[50,136,189]],[0.25,[153,213,148]],[0.5,[254,224,139]],[0.75,[252,141,89]],[1,[213,62,79]]]
 };
 
 function utilWeighted(byName, names, ci){
@@ -5458,14 +5468,13 @@ function utilTrendRender(){
 
 /* ---- Heatmap (groups x periods, colour = utilisation). Always shown full-width
         below the two charts; a Colours scale + a Default|Highest-util sort. ---- */
-function utilHmColor(pct){
+function utilHmColorT(t){
     var pal=UTIL_PALETTES[utilHmPalette]||UTIL_PALETTES.rdylgn;
-    var t=Math.max(0,Math.min(1,pct/100));           // 0..100%+ (over 100 clamps to top)
+    t=Math.max(0,Math.min(1,t));
     var i=0; while(i<pal.length-1 && t>pal[i+1][0]) i++;
     var a=pal[i], b=pal[Math.min(i+1,pal.length-1)];
     var span=(b[0]-a[0])||1, f=(t-a[0])/span;
-    var r=Math.round(a[1][0]+(b[1][0]-a[1][0])*f), g=Math.round(a[1][1]+(b[1][1]-a[1][1])*f), bl=Math.round(a[1][2]+(b[1][2]-a[1][2])*f);
-    return [r,g,bl];
+    return [Math.round(a[1][0]+(b[1][0]-a[1][0])*f),Math.round(a[1][1]+(b[1][1]-a[1][1])*f),Math.round(a[1][2]+(b[1][2]-a[1][2])*f)];
 }
 function utilHmText(rgb){ return (0.299*rgb[0]+0.587*rgb[1]+0.114*rgb[2]) < 150 ? '#fff' : '#272962'; }
 function utilHeatmapRender(){
@@ -5479,18 +5488,30 @@ function utilHeatmapRender(){
         groups.forEach(function(grp){ var a=utilWindowAvg(byName,grp.names,vis); grp._k=(a==null?-1:a); });
         groups.sort(function(a,b){ return b._k-a._k; });   // highest utilisation first
     }
-    document.getElementById('utilHeatTitle').textContent='Utilisation Heatmap (%)';
+    // Pre-compute every visible cell, then colour-scale RELATIVE to what's on screen
+    // (5th-95th percentile of the visible values) so the contrast spreads across the
+    // shown projects instead of everything sitting near the top of an absolute 0-100%.
+    var cellVals=groups.map(function(grp){ return vis.map(function(ci){ var v=utilWeighted(byName,grp.names,ci); return v==null?null:v*100; }); });
+    var flat=[]; cellVals.forEach(function(row){ row.forEach(function(v){ if(v!=null) flat.push(v); }); });
+    flat.sort(function(a,b){ return a-b; });
+    function pctile(p){ if(!flat.length) return 0; var idx=Math.min(flat.length-1,Math.max(0,Math.round((p/100)*(flat.length-1)))); return flat[idx]; }
+    var lo=pctile(5), hi=pctile(95);
+    if(hi-lo<1e-6){ lo=flat.length?flat[0]:0; hi=flat.length?flat[flat.length-1]:100; }
+    if(hi-lo<1e-6){ lo-=1; hi+=1; }
+    var rng=hi-lo;
+    var tt=document.getElementById('utilHeatTitle');
+    if(tt) tt.textContent='Utilisation Heatmap — shading '+Math.round(lo)+'%–'+Math.round(hi)+'%';
     var h='<table class="util-heatmap"><thead><tr><th class="util-hm-corner"></th>';
     for(var k=0;k<vis.length;k++) h+='<th>'+(view.short_columns[vis[k]]||view.columns[vis[k]])+'</th>';
     h+='</tr></thead><tbody>';
-    groups.forEach(function(grp){
-        h+='<tr><td class="util-hm-label" title="'+prjEsc(grp.label)+'">'+prjEsc(grp.label)+'</td>';
-        for(var k=0;k<vis.length;k++){ var v=utilWeighted(byName,grp.names,vis[k]);
-            if(v==null){ h+='<td class="util-hm-cell util-hm-empty">·</td>'; }
-            else { var pct=v*100, rgb=utilHmColor(pct); h+='<td class="util-hm-cell" style="background:rgb('+rgb[0]+','+rgb[1]+','+rgb[2]+');color:'+utilHmText(rgb)+';">'+Math.round(pct)+'</td>'; }
+    for(var gi=0;gi<groups.length;gi++){
+        h+='<tr><td class="util-hm-label" title="'+prjEsc(groups[gi].label)+'">'+prjEsc(groups[gi].label)+'</td>';
+        for(var k=0;k<vis.length;k++){ var p=cellVals[gi][k];
+            if(p==null){ h+='<td class="util-hm-cell util-hm-empty">·</td>'; }
+            else { var rgb=utilHmColorT((p-lo)/rng); h+='<td class="util-hm-cell" style="background:rgb('+rgb[0]+','+rgb[1]+','+rgb[2]+');color:'+utilHmText(rgb)+';">'+Math.round(p)+'</td>'; }
         }
         h+='</tr>';
-    });
+    }
     h+='</tbody></table>';
     if(!groups.length) h='<div style="text-align:center;color:#9395A2;padding:20px;">No projects are online in the selected range.</div>';
     document.getElementById('utilHeatmap').innerHTML=h;
@@ -5502,7 +5523,14 @@ function utilSetHeatSort(m){
     if(d) d.className=m==='default'?'active':''; if(u) u.className=m==='util'?'active':'';
     utilHeatmapRender();
 }
-function utilCharts(){ if(!PRJ||!PRJ.utilisation) return; utilRangeRender(); utilTrendRender(); utilHeatmapRender(); }
+function utilToggleCharts(){
+    utilChartsCollapsed=!utilChartsCollapsed;
+    var box=document.getElementById('utilTopCharts'); if(box) box.style.display=utilChartsCollapsed?'none':'';
+    var btn=document.getElementById('utilChartsToggle');
+    if(btn) btn.innerHTML=(utilChartsCollapsed?'&#9656; Show seasonality &amp; trend charts':'&#9662; Hide seasonality &amp; trend charts');
+    if(!utilChartsCollapsed){ utilRangeRender(); utilTrendRender(); }   // re-size on reveal
+}
+function utilCharts(){ if(!PRJ||!PRJ.utilisation) return; if(!utilChartsCollapsed){ utilRangeRender(); utilTrendRender(); } utilHeatmapRender(); }
 function utilRender(){ if(!PRJ||!PRJ.utilisation) return; utilRenderTable(); utilCharts(); }
 
 function utilInit(){
@@ -5511,7 +5539,7 @@ function utilInit(){
     prjFilters.utilchart={status:[],region:[],country:[],company:[],project:[]};
     if(utilRangeChart){ utilRangeChart.destroy(); utilRangeChart=null; }
     if(utilTrendChart){ utilTrendChart.destroy(); utilTrendChart=null; }
-    utilHmPalette='rdylgn'; utilHeatSort='default';
+    utilHmPalette='rdylgn'; utilHeatSort='default'; utilChartsCollapsed=false;
     prjBuildFilters('utilchart');
     utilCloneChartControls();
     utilPopulateRange();
@@ -6106,7 +6134,6 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '      </div>\n'
     html += '      <div class="control-group"><label>From</label><select id="utilFrom" onchange="utilRender()"></select></div>\n'
     html += '      <div class="control-group"><label>To</label><select id="utilTo" onchange="utilRender()"></select></div>\n'
-    html += '      <span class="util-note">Roll-ups are capacity-weighted (Σ util×capacity ÷ Σ capacity).</span>\n'
     html += '    </div>\n'
     html += '    <div class="prj-table-container">\n'
     html += '      <table class="prj-table prj-outlook-table util-table"><thead id="utilHead"></thead><tbody id="utilBody"></tbody></table>\n'
@@ -6129,8 +6156,12 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '        <button class="prj-filter-reset" onclick="prjResetFilters(\'utilchart\')">Reset</button>\n'
     html += '      </div>\n'
     html += '    </div>\n'
-    # Charts: seasonality (left) + trend (right); heatmap full-width below.
-    html += '    <div class="prj-outlook-charts">\n'
+    # Charts: seasonality (left) + trend (right) — collapsible so the heatmap can
+    # sit right under the filters; heatmap full-width below, always shown.
+    html += '    <div class="util-charts-head">\n'
+    html += '      <button class="util-collapse-btn" id="utilChartsToggle" onclick="utilToggleCharts()">&#9662; Hide seasonality &amp; trend charts</button>\n'
+    html += '    </div>\n'
+    html += '    <div class="prj-outlook-charts" id="utilTopCharts">\n'
     html += '      <div class="grid-quad">\n'
     html += '        <div class="chart-controls prj-chart-head">\n'
     html += '          <div class="control-group"><label>Average range</label><select id="utilRangeLookback" onchange="utilCharts()"></select></div>\n'
@@ -6154,7 +6185,9 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '          <select id="utilHmPalette" onchange="utilSetPalette()">\n'
     html += '            <option value="rdylgn" selected>Red &rarr; Green</option>\n'
     html += '            <option value="heat">Heat (Yellow &rarr; Red)</option>\n'
+    html += '            <option value="spectral">Spectral</option>\n'
     html += '            <option value="blue">Blue scale</option>\n'
+    html += '            <option value="green">Green scale</option>\n'
     html += '          </select>\n'
     html += '        </div>\n'
     html += '        <div class="control-group"><label>Sort</label>\n'
