@@ -832,6 +832,9 @@ def build_projects_blob(config):
         # Capacity views (Unrisked + Risked) read straight from the extracted
         # monthly capacity series (the model's phased train-by-train totals).
         capacity = build_projects_capacity(wb, latest_actual)
+        # Utilisation views (capacity-weighted operating rate) from the util +
+        # risked-capacity series. Carries per-bucket weights for correct roll-ups.
+        utilisation = build_projects_utilisation(wb, latest_actual)
     finally:
         wb.close()
 
@@ -856,6 +859,9 @@ def build_projects_blob(config):
         # Project-level capacity period views (Unrisked + Risked; end-of-period
         # level over the 4 'level' periods only). Powers the Capacity sub-tab.
         "capacity": capacity,
+        # Project-level utilisation period views (capacity-weighted % operating
+        # rate, all 6 periods; rows carry per-bucket weights). Utilisation sub-tab.
+        "utilisation": utilisation,
         # latest actual month (shared with Global LNG) caps the range chart's
         # current-year line; region colors keep the stacked area consistent.
         "latest_actual": latest_actual,
@@ -992,6 +998,91 @@ def build_projects_capacity(wb, latest_actual=None):
 
     print(f"  Capacity views built: {len(unr_rows)} projects x {n} months (end-of-period level)")
     return {"unrisked": build_views(unr_rows), "risked": build_views(rk_rows)}
+
+
+def build_projects_utilisation(wb, latest_actual=None):
+    """Build project-level UTILISATION period views from 'LNG Proj Utilisation'
+    (the model's operating rate, defined against risked capacity), weighted by the
+    'LNG Proj Risked Cap' series so region/country roll-ups are correct.
+
+    Utilisation is NOT additive. For each project x bucket we emit both the
+    capacity-weighted utilisation and its weight (sum of risked capacity over the
+    bucket's months), so the JS can re-aggregate across projects as
+    `Σ(util x weight) / Σ(weight)` = total production / total capacity. A bucket
+    with zero weight (project not yet started) is left blank (null). All six
+    periods are built — monthly/seasonal detail is the point of this tab.
+    """
+    def read_series(sheet_name):
+        ws = wb[sheet_name]
+        dates, last_col = [], 1
+        for c in range(2, ws.max_column + 1):
+            if ws.cell(row=1, column=c).value is not None:
+                last_col = c
+        for c in range(2, last_col + 1):
+            dates.append(ws.cell(row=1, column=c).value)
+        rows = {}
+        for r in range(2, ws.max_row + 1):
+            nm = ws.cell(row=r, column=1).value
+            if not nm:
+                continue
+            rows[str(nm).strip()] = [ws.cell(row=r, column=c).value for c in range(2, last_col + 1)]
+        return dates, rows
+
+    dates, util_by = read_series("LNG Proj Utilisation")
+    _, cap_by = read_series("LNG Proj Risked Cap")
+    days = [monthrange(d.year, d.month)[1] if isinstance(d, datetime) else 30 for d in dates]
+    n = len(dates)
+
+    # Per-project monthly (utilisation, weight=risked capacity). util as fraction.
+    names = list(util_by.keys())
+    monthly = {}
+    for nm in names:
+        u = util_by.get(nm) or [None] * n
+        w = cap_by.get(nm) or [None] * n
+        um = [float(x) if isinstance(x, (int, float)) else 0.0 for x in u]
+        wm = [float(x) if isinstance(x, (int, float)) else 0.0 for x in w]
+        monthly[nm] = (um, wm)
+
+    boundary = None
+    if latest_actual:
+        boundary = datetime(latest_actual["year"], latest_actual["month"], 1)
+
+    def col_is_forecast(col):
+        if not boundary or not col["indices"]:
+            return 1
+        last = dates[col["indices"][-1]]
+        return 1 if (isinstance(last, datetime) and last > boundary) else 0
+
+    def aggregate(period_cols):
+        out = []
+        for nm in names:
+            um, wm = monthly[nm]
+            base, wbase = [], []
+            for col in period_cols:
+                idx = col["indices"]
+                num = sum(um[i] * wm[i] for i in idx)
+                den = sum(wm[i] for i in idx)
+                wbase.append(den)
+                base.append((num / den) if den > 1e-12 else None)
+            out.append({"label": nm, "base": base, "w": wbase})
+        return out
+
+    period_results = aggregate_monthly_to_periods(dates, days)
+    WANTED = ["Monthly", "Quarterly", "Annual CY", "Gas Year", "Winter", "Summer"]
+    views = {}
+    for vn in WANTED:
+        pc = period_results.get(vn, [])
+        views[vn] = {
+            "columns": [c["label"] for c in pc],
+            "short_columns": [c["short"] for c in pc],
+            "col_meta": [{"label": c["label"], "short": c["short"], "year": c.get("year", 0),
+                          "month": c.get("month"), "days": c["days"]} for c in pc],
+            "days": [c["days"] for c in pc],
+            "netok": [col_is_forecast(c) for c in pc],
+            "rows": aggregate(pc),
+        }
+    print(f"  Utilisation views built: {len(names)} projects x {n} months (capacity-weighted)")
+    return {"views": views}
 
 
 def detect_latest_actual(config):
@@ -1780,6 +1871,20 @@ body.projects-tab .lng-subtab-bar { display: flex; }
     text-transform: uppercase; letter-spacing: 0.5px; padding: 4px 2px 8px;
 }
 @media (max-width: 1100px) { .cap-tables { grid-template-columns: 1fr; } }
+/* Utilisation sub-tab */
+.util-note { font-size: 11px; font-style: italic; color: """ + grey + """; align-self: flex-end; padding-bottom: 6px; }
+.util-heatmap-wrap { overflow: auto; max-height: 340px; border: 1px solid """ + border + """; border-radius: 8px; }
+table.util-heatmap { border-collapse: separate; border-spacing: 2px; font-size: 11px; width: 100%; }
+table.util-heatmap th {
+    position: sticky; top: 0; background: #fff; z-index: 2; font-size: 10px; font-weight: bold;
+    color: """ + grey + """; padding: 3px 5px; text-align: center; white-space: nowrap;
+}
+table.util-heatmap td.util-hm-label {
+    position: sticky; left: 0; background: #fff; z-index: 1; font-weight: bold; color: """ + db + """;
+    padding: 3px 8px 3px 4px; white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis;
+}
+table.util-heatmap td.util-hm-cell { text-align: center; padding: 4px 6px; border-radius: 3px; font-variant-numeric: tabular-nums; min-width: 30px; }
+table.util-heatmap th.util-hm-corner { position: sticky; left: 0; z-index: 3; }
 /* Chart header: grey bar carrying a centered title (left chart also has the
    Average-range dropdown on the left; right chart has just the title). */
 .prj-chart-head { position: relative; min-height: 42px; }
@@ -2314,7 +2419,7 @@ function lngSetSubtab(which) {
         if (currentKey !== 'lng_projects' || embedActive) switchDataset('lng_projects');
         prjSetSubtab(which);   // 'outlook' | 'projects' | 'capacity'
     }
-    var btns = { overview: 'lngSubOverview', outlook: 'lngSubOutlook', projects: 'lngSubProjects', capacity: 'lngSubCapacity' };
+    var btns = { overview: 'lngSubOverview', outlook: 'lngSubOutlook', projects: 'lngSubProjects', capacity: 'lngSubCapacity', utilisation: 'lngSubUtilisation' };
     for (var k in btns) {
         var b = document.getElementById(btns[k]);
         if (b) b.classList.toggle('active', k === which);
@@ -4300,7 +4405,7 @@ function prjSum(arr,key){ var s=0; for(var i=0;i<arr.length;i++){ var v=arr[i][k
 function prjSumActive(arr,key){ var s=0; for(var i=0;i<arr.length;i++){ var p=arr[i]; if(p.status==='Shut-down') continue; var v=p[key]; if(typeof v==='number'&&!isNaN(v)) s+=v; } return s; }
 function prjFieldVal(p,dim){ return dim==='project'?p.name : dim==='status'?p.status : dim==='region'?p.region : dim==='country'?p.country : null; }
 function prjCap(s){ return s.charAt(0).toUpperCase()+s.slice(1); }
-function prjContainerId(scope,dim){ var pre=scope==='capchart'?'capcFilter':(scope==='chart'?'prjcFilter':'prjFilter'); return pre+prjCap(dim); }
+function prjContainerId(scope,dim){ var pre=scope==='utilchart'?'utilcFilter':(scope==='capchart'?'capcFilter':(scope==='chart'?'prjcFilter':'prjFilter')); return pre+prjCap(dim); }
 function prjMatchDim(p,dim,scope){
     var sel=prjFilters[scope][dim]; if(!sel.length) return true;
     if(dim==='company') return p.companies.some(function(c){return sel.indexOf(c)>=0;});
@@ -4365,11 +4470,12 @@ function prjInit(){
     prjOutlookPopulateLookback();
     prjSetLink(true);                                     // start linked (chart controls hidden)
     capInit();                                            // set up the Capacity sub-tab
+    utilInit();                                           // set up the Utilisation sub-tab
     prjSetSubtab('outlook');
     prjApplyFilters();
 }
-// table filters changed -> re-render assumptions + production + change + capacity + (charts if linked)
-function prjApplyFilters(){ prjUpdateFilterUI('table'); prjUpdateNetToggle(); capUpdateNetToggle(); prjRenderSummary(); prjRenderTree(); prjOutlookRender(); capRender(); }
+// table filters changed -> re-render assumptions + production + change + capacity + utilisation + (charts if linked)
+function prjApplyFilters(){ prjUpdateFilterUI('table'); prjUpdateNetToggle(); capUpdateNetToggle(); prjRenderSummary(); prjRenderTree(); prjOutlookRender(); capRender(); utilRender(); }
 // chart filters changed -> re-render only the charts
 function prjChartApply(){ prjUpdateFilterUI('chart'); prjOutlookCharts(); }
 
@@ -4420,11 +4526,11 @@ function prjToggle(scope, dimKey, val){
     // (A status toggle doesn't change the view.) Applies to the matching scope's
     // view dropdown — table when linked drives both table + charts.
     if(dimKey!=='status'){
-        var vbId=scope==='capchart'?'capcViewBy':(scope==='chart'?'prjcViewBy':'prjViewBy');
+        var vbId=scope==='utilchart'?'utilcViewBy':(scope==='capchart'?'capcViewBy':(scope==='chart'?'prjcViewBy':'prjViewBy'));
         var vbEl=document.getElementById(vbId);
         if(vbEl) vbEl.value=prjSuggestView(scope);
     }
-    if(scope==='table') prjApplyFilters(); else if(scope==='capchart') capChartApply(); else prjChartApply();
+    if(scope==='table') prjApplyFilters(); else if(scope==='capchart') capChartApply(); else if(scope==='utilchart') utilChartApply(); else prjChartApply();
 }
 function prjResetFilters(scope){
     prjFilters[scope]={status:[],region:[],country:[],company:[],project:[]};
@@ -4440,8 +4546,14 @@ function prjResetFilters(scope){
         var cvb=document.getElementById('capViewBy'); if(cvb) cvb.value='region';
         var cpd=document.getElementById('capPeriod'); if(cpd) cpd.value='Annual CY';
         capPopulateRange();
+        // Utilisation sub-tab also shares it.
+        utilExpanded={};
+        var uvb=document.getElementById('utilViewBy'); if(uvb) uvb.value='region';
+        var upd=document.getElementById('utilPeriod'); if(upd) upd.value='Annual CY';
+        utilPopulateRange();
         prjApplyFilters();
     } else if(scope==='capchart') { capChartApply(); }
+    else if(scope==='utilchart') { utilChartApply(); }
     else { prjChartApply(); }
 }
 function prjUpdateFilterUI(scope){
@@ -4565,9 +4677,11 @@ function prjSetSubtab(t){
     document.getElementById('prjPaneProjects').classList.toggle('active', t==='projects');
     document.getElementById('prjPaneOutlook').classList.toggle('active', t==='outlook');
     document.getElementById('prjPaneCapacity').classList.toggle('active', t==='capacity');
-    // Re-render the Capacity charts when its pane becomes visible (they may have
-    // been drawn to a hidden canvas during the last filter apply).
+    document.getElementById('prjPaneUtilisation').classList.toggle('active', t==='utilisation');
+    // Re-render charts when a pane becomes visible (they may have been drawn to a
+    // hidden canvas during the last filter apply).
     if(t==='capacity') capRender();
+    if(t==='utilisation') utilRender();
 }
 
 // Region/Country/Project expand toggles (event delegation on the tree).
@@ -5110,6 +5224,266 @@ document.addEventListener('click', function(e){
     capRenderTables();
 });
 
+/* ============================================================================
+   UTILISATION sub-tab (5th Global LNG > project pane). One table + two charts
+   (seasonality range on the left; a Trend | Heatmap toggle on the right). It is
+   a % (operating rate), NOT additive: region/country roll-ups are CAPACITY-
+   WEIGHTED — util = Σ(util x weight) / Σ(weight), where weight is risked capacity
+   (computed in build_projects_utilisation). No Gross/Net, no unit dropdown.
+   Reuses the prj* filter/cycle/chart helpers; 'utilchart' is the unlinked scope.
+   ========================================================================== */
+var utilExpanded = {};
+var utilChartLinked = true;
+var utilRightMode = 'trend';    // right chart: 'trend' (multi-line) | 'heatmap'
+var utilRangeChart = null, utilTrendChart = null;
+
+function utilWeighted(byName, names, ci){
+    var num=0, den=0;
+    for(var i=0;i<names.length;i++){ var r=byName[names[i]]; if(!r) continue; var u=r.base[ci], w=r.w[ci];
+        if(u==null) continue; num+=u*w; den+=w; }
+    return den>1e-12 ? num/den : null;   // fraction (0..~1.4)
+}
+function utilGroups(viewBy, leaves){
+    var groups=[];
+    if(viewBy==='project'){ leaves.forEach(function(p){ groups.push({label:p.name,names:[p.name]}); }); }
+    else if(viewBy==='country'){ var byC={}; leaves.forEach(function(p){ (byC[p.country]=byC[p.country]||[]).push(p.name); }); Object.keys(byC).forEach(function(c){ groups.push({label:c,names:byC[c]}); }); }
+    else { var byR={}; leaves.forEach(function(p){ (byR[p.region]=byR[p.region]||[]).push(p.name); }); PRJ.region_order.forEach(function(r){ if(byR[r]) groups.push({label:r,names:byR[r]}); }); }
+    return groups;
+}
+function utilGroupColor(viewBy, label, g){ return (viewBy==='region') ? (PRJ.region_colors[label]||PRJ_OWNER_COLORS[g%PRJ_OWNER_COLORS.length]) : PRJ_OWNER_COLORS[g%PRJ_OWNER_COLORS.length]; }
+
+/* ---- One table: capacity-weighted utilisation %, region/country/project tree.
+        Sort by total weight (capacity) so the biggest plants lead. ---- */
+function utilBuildTree(viewBy, leaves, byName, vis, cellsFn){
+    function nm(p){ return p.name; }
+    function groupBy(list,key){ var g={}; list.forEach(function(p){ (g[p[key]]=g[p[key]]||[]).push(p); }); return g; }
+    function wtot(names){ var s=0; for(var i=0;i<names.length;i++){ var r=byName[names[i]]; if(r) for(var k=0;k<vis.length;k++){ var w=r.w[vis[k]]; if(typeof w==='number') s+=w; } } return s; }
+    function byWDesc(a,b){ return wtot([b.name])-wtot([a.name]); }
+    function aggRow(cls,key,label,n,names,exp){
+        return '<tr class="'+cls+'" data-util-x="'+prjEsc(key)+'"><td><span class="prj-arrow'+(exp?' expanded':'')+'">&#9654;</span> '
+            + prjEsc(label)+' <span style="color:#9395A2;font-weight:normal;">('+n+')</span></td>'+cellsFn(names)+'</tr>';
+    }
+    function projRow(p){ return '<tr class="prj-row-project"><td>'+prjEsc(p.name)+'</td>'+cellsFn([p.name])+'</tr>'; }
+    var body='';
+    if(viewBy==='project'){
+        leaves.slice().sort(byWDesc).forEach(function(p){ body+=projRow(p); });
+    } else if(viewBy==='country'){
+        var byC=groupBy(leaves,'country');
+        Object.keys(byC).sort(function(a,b){ return wtot(byC[b].map(nm))-wtot(byC[a].map(nm)); }).forEach(function(c){
+            var cExp=!!utilExpanded['c|'+c];
+            body+=aggRow('prj-row-country','c|'+c,c,byC[c].length,byC[c].map(nm),cExp);
+            if(cExp) byC[c].slice().sort(byWDesc).forEach(function(p){ body+=projRow(p); });
+        });
+    } else {
+        var byR=groupBy(leaves,'region');
+        PRJ.region_order.forEach(function(region){
+            var rp=byR[region]; if(!rp||!rp.length) return;
+            var rExp=!!utilExpanded['r|'+region];
+            body+=aggRow('prj-row-region','r|'+region,region,rp.length,rp.map(nm),rExp);
+            if(!rExp) return;
+            var byC=groupBy(rp,'country');
+            Object.keys(byC).sort(function(a,b){ return wtot(byC[b].map(nm))-wtot(byC[a].map(nm)); }).forEach(function(c){
+                var ckey='r|'+region+'|'+c; var cExp=!!utilExpanded[ckey];
+                body+=aggRow('prj-row-country',ckey,c,byC[c].length,byC[c].map(nm),cExp);
+                if(cExp) byC[c].slice().sort(byWDesc).forEach(function(p){ body+=projRow(p); });
+            });
+        });
+    }
+    var allNames=leaves.map(nm);
+    if(allNames.length) body+='<tr class="prj-row-total"><td>Weighted total ('+allNames.length+')</td>'+cellsFn(allNames)+'</tr>';
+    return body;
+}
+function utilRenderTable(){
+    if(!PRJ || !PRJ.utilisation) return;
+    var period=document.getElementById('utilPeriod').value;
+    var view=PRJ.utilisation.views[period]; if(!view) return;
+    var vis=prjVisIndices(view, document.getElementById('utilFrom'), document.getElementById('utilTo'));
+    var viewBy=document.getElementById('utilViewBy').value;
+    var byName={}; view.rows.forEach(function(r){ byName[r.label]=r; });
+    var leaves=prjFiltered().filter(function(p){ return byName[p.name]; });
+    var hHtml='<tr><th>Utilisation<span class="unit-label"> ('+period+')</span></th>';
+    for(var i=0;i<vis.length;i++) hHtml+='<th>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
+    document.getElementById('utilHead').innerHTML=hHtml+'</tr>';
+    function cellsFn(names){ var s='';
+        for(var k=0;k<vis.length;k++){ var v=utilWeighted(byName,names,vis[k]); s+='<td>'+(v==null?'—':Math.round(v*100)+'%')+'</td>'; }
+        return s; }
+    var body=utilBuildTree(viewBy, leaves, byName, vis, cellsFn);
+    if(!body) body='<tr><td colspan="'+(vis.length+1)+'" style="text-align:center;color:#9395A2;padding:20px;">No projects match the current filters.</td></tr>';
+    document.getElementById('utilBody').innerHTML=body;
+}
+
+/* ---- Chart link/unlink (scope 'utilchart') ---- */
+function utilChartScope(){ return utilChartLinked ? 'table' : 'utilchart'; }
+function utilChartViewBy(){ return document.getElementById(utilChartLinked?'utilViewBy':'utilcViewBy').value; }
+function utilChartPeriodVal(){ return document.getElementById(utilChartLinked?'utilPeriod':'utilcPeriod').value; }
+function utilChartFromEl(){ return document.getElementById(utilChartLinked?'utilFrom':'utilcFrom'); }
+function utilChartToEl(){ return document.getElementById(utilChartLinked?'utilTo':'utilcTo'); }
+function utilChartApply(){ prjUpdateFilterUI('utilchart'); utilCharts(); }
+function utilSetLink(linked){
+    utilChartLinked=linked;
+    var btn=document.getElementById('utilLinkBtn');
+    if(btn){ btn.classList.toggle('active', linked); btn.textContent = linked ? '✓ Linked to table filters' : 'Unlinked — independent'; }
+    var ctrls=document.getElementById('utilChartFilterControls'); if(ctrls) ctrls.style.display = linked ? 'none' : 'flex';
+    if(!linked){
+        ['status','region','country','company','project'].forEach(function(d){ prjFilters.utilchart[d]=prjFilters.table[d].slice(); });
+        var vb=document.getElementById('utilcViewBy'); if(vb) vb.value=document.getElementById('utilViewBy').value;
+        var pd=document.getElementById('utilcPeriod'); if(pd) pd.value=document.getElementById('utilPeriod').value;
+        utilcPopulateRange(true);
+        prjUpdateFilterUI('utilchart');
+    }
+    utilCharts();
+}
+function utilToggleLink(){ utilSetLink(!utilChartLinked); }
+
+/* ---- Range / period option lists (reuse the prj generic fillers) ---- */
+function utilPopulateRange(){
+    var period=document.getElementById('utilPeriod').value; var view=PRJ.utilisation.views[period]; if(!view) return;
+    var fs=document.getElementById('utilFrom'), ts=document.getElementById('utilTo');
+    prjFillRangeOptions(view, fs, ts); prjDefaultRange(period, view, fs, ts);
+}
+function utilcPopulateRange(copyFromTable){
+    var period=document.getElementById('utilcPeriod').value; var view=PRJ.utilisation.views[period]; if(!view) return;
+    var fs=document.getElementById('utilcFrom'), ts=document.getElementById('utilcTo'); if(!fs||!ts) return;
+    prjFillRangeOptions(view, fs, ts);
+    if(copyFromTable && document.getElementById('utilPeriod').value===period){ fs.value=document.getElementById('utilFrom').value; ts.value=document.getElementById('utilTo').value; }
+    else prjDefaultRange(period, view, fs, ts);
+}
+function utilOnPeriod(){ utilPopulateRange(); utilRender(); }
+function utilcOnPeriod(){ utilcPopulateRange(false); utilCharts(); }
+function utilCloneChartControls(){
+    var vb=document.getElementById('utilcViewBy');
+    if(vb) vb.innerHTML='<option value="region">Region</option><option value="country">Country</option><option value="project">Project</option>';
+    var pd=document.getElementById('utilcPeriod');
+    if(pd){ var L={'Monthly':'Monthly','Quarterly':'Quarterly','Annual CY':'Annual (Calendar Year)','Gas Year':'Annual (Gas Year)','Winter':'Winter (Oct-Mar)','Summer':'Summer (Apr-Sep)'};
+        pd.innerHTML=['Monthly','Quarterly','Annual CY','Gas Year','Winter','Summer'].map(function(p){return '<option value="'+p+'"'+(p==='Annual CY'?' selected':'')+'>'+L[p]+'</option>';}).join(''); }
+}
+function utilPopulateLookback(){
+    var sel=document.getElementById('utilRangeLookback'); if(!sel) return;
+    var firstYear=PRJ.utilisation.views.Monthly.col_meta[0].year;
+    var maxLb=Math.max(3, currentGY()-firstYear);
+    var html=''; for(var n=3;n<=maxLb;n++) html+='<option value="'+n+'"'+(n===5?' selected':'')+'>'+n+' years</option>';
+    sel.innerHTML=html;
+}
+
+/* ---- Left chart: utilisation seasonality (gas-year cycle, this year vs band) ---- */
+function utilRangeRender(){
+    var mv=PRJ.utilisation.views.Monthly, scope=utilChartScope();
+    var byName={}; mv.rows.forEach(function(r){ byName[r.label]=r; });
+    var leaves=prjFilteredFor(scope).filter(function(p){ return byName[p.name]; });
+    var names=leaves.map(function(p){ return p.name; });
+    var idxMap={}; for(var i=0;i<mv.col_meta.length;i++) idxMap[mv.col_meta[i].year+'-'+mv.col_meta[i].month]=i;
+    var lbEl=document.getElementById('utilRangeLookback'); var lookback=lbEl?(parseInt(lbEl.value)||5):5;
+    var cal=isCalCycle(utilChartPeriodVal());
+    var cgy=cycleBase(cal), prevGY=cgy-1, nextGY=cgy+1, labels=cycleLabels(cal);
+    function findIdx(y,m){ var k=y+'-'+m; return (k in idxMap)?idxMap[k]:-1; }
+    function valAt(idx){ if(idx==null||idx<0) return null; var v=utilWeighted(byName,names,idx); return v==null?null:v*100; }
+    function gyVals(gy){ var out=[]; for(var i=0;i<12;i++){ var a=cycleToActual(cal,gy,i); out.push(valAt(findIdx(a.year,a.month))); } return out; }
+    var prevVals=gyVals(prevGY), curVals=gyVals(cgy), nextVals=gyVals(nextGY);
+    var lbStart=cgy-lookback, lbEnd=cgy-1, avg=[],mn=[],mx=[];
+    for(var mo=0;mo<12;mo++){ var s=[]; for(var gy=lbStart;gy<=lbEnd;gy++){ var a=cycleToActual(cal,gy,mo); var v=valAt(findIdx(a.year,a.month)); if(v!=null) s.push(v);} if(!s.length){avg.push(null);mn.push(null);mx.push(null);continue;} var su=0;for(var k=0;k<s.length;k++)su+=s[k]; avg.push(su/s.length); mn.push(Math.min.apply(null,s)); mx.push(Math.max.apply(null,s)); }
+    document.getElementById('utilRangeTitle').textContent='Utilisation Seasonality — '+leaves.length+' projects (%)';
+    var datasets=[
+        { label: lookback+'y max',     data: mx,       borderColor:'rgba(0,0,0,0)', backgroundColor:'rgba(0,0,0,0)', pointRadius:0, fill:false, order:20 },
+        { label: lookback+'y range',   data: mn,       borderColor:'rgba(0,0,0,0)', backgroundColor:'rgba(147,149,162,0.28)', pointRadius:0, fill:'-1', order:19 },
+        { label: lookback+'y average', data: avg,      borderColor:'#272962', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, pointRadius:0, fill:false, tension:0.25, order:4 },
+        { label: cycleSeriesLabel(cal,prevGY),         data: prevVals, borderColor:'#0C5B19', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, pointRadius:2, fill:false, tension:0.25, order:3 },
+        { label: cycleSeriesLabel(cal,cgy,' (current)'),data: curVals, borderColor:'#C00000', backgroundColor:'rgba(0,0,0,0)', borderWidth:2.6, pointRadius:3, fill:false, tension:0.25, order:1 },
+        { label: cycleSeriesLabel(cal,nextGY,' (forecast)'),data: nextVals, borderColor:'#539648', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, borderDash:[6,4], pointRadius:2, fill:false, tension:0.25, order:2 },
+    ];
+    var opts=chartOptionsLine('mmt'); opts.scales.y.title.text='Utilisation (%)'; opts.scales.y.ticks=opts.scales.y.ticks||{}; opts.scales.y.ticks.callback=function(v){return v+'%';};
+    if(utilRangeChart){ utilRangeChart.destroy(); utilRangeChart=null; }
+    var c=document.getElementById('utilRangeCanvas'); if(!c) return;
+    utilRangeChart=new Chart(c,{type:'line',data:{labels:labels,datasets:datasets},options:opts});
+    renderHtmlLegend(utilRangeChart,'utilRangeLegend',{filter:function(l){return !(l||'').endsWith(' max');}});
+}
+
+/* ---- Right chart A: multi-line trend (one line per group, % over time) ---- */
+function utilTrendRender(){
+    var period=utilChartPeriodVal(), view=PRJ.utilisation.views[period]; if(!view) return;
+    var vis=prjVisIndices(view, utilChartFromEl(), utilChartToEl());
+    var viewBy=utilChartViewBy(), scope=utilChartScope();
+    var byName={}; view.rows.forEach(function(r){ byName[r.label]=r; });
+    var leaves=prjFilteredFor(scope).filter(function(p){ return byName[p.name]; });
+    var groups=utilGroups(viewBy, leaves);
+    var labels=[]; for(var k=0;k<vis.length;k++) labels.push(view.short_columns[vis[k]]||view.columns[vis[k]]);
+    var datasets=groups.map(function(grp,g){
+        var color=utilGroupColor(viewBy,grp.label,g);
+        var data=vis.map(function(ci){ var v=utilWeighted(byName,grp.names,ci); return v==null?null:v*100; });
+        return { label:grp.label, data:data, borderColor:color, backgroundColor:'rgba(0,0,0,0)', borderWidth:2, pointRadius:0, tension:0.25, fill:false, spanGaps:true };
+    });
+    document.getElementById('utilRightTitle').textContent='Utilisation Trend (%)';
+    var opts=chartOptionsLine('mmt'); opts.scales.y.title.text='Utilisation (%)'; opts.scales.y.ticks=opts.scales.y.ticks||{}; opts.scales.y.ticks.callback=function(v){return v+'%';};
+    if(utilTrendChart){ utilTrendChart.destroy(); utilTrendChart=null; }
+    var c=document.getElementById('utilTrendCanvas'); if(!c) return;
+    utilTrendChart=new Chart(c,{type:'line',data:{labels:labels,datasets:datasets},options:opts});
+    renderHtmlLegend(utilTrendChart,'utilTrendLegend',{});
+}
+
+/* ---- Right chart B: heatmap (groups x periods, colour = utilisation) ---- */
+function utilHmColor(pct){
+    var t=Math.max(0,Math.min(1.2,pct/100))/1.2;   // 0..120%+ -> 0..1
+    var a=[238,240,246], b=[39,41,98];              // light grey -> Palissy dark blue
+    return 'rgb('+Math.round(a[0]+(b[0]-a[0])*t)+','+Math.round(a[1]+(b[1]-a[1])*t)+','+Math.round(a[2]+(b[2]-a[2])*t)+')';
+}
+function utilHeatmapRender(){
+    var period=utilChartPeriodVal(), view=PRJ.utilisation.views[period]; if(!view) return;
+    var vis=prjVisIndices(view, utilChartFromEl(), utilChartToEl());
+    var viewBy=utilChartViewBy(), scope=utilChartScope();
+    var byName={}; view.rows.forEach(function(r){ byName[r.label]=r; });
+    var leaves=prjFilteredFor(scope).filter(function(p){ return byName[p.name]; });
+    var groups=utilGroups(viewBy, leaves);
+    document.getElementById('utilRightTitle').textContent='Utilisation Heatmap (%)';
+    var h='<table class="util-heatmap"><thead><tr><th class="util-hm-corner"></th>';
+    for(var k=0;k<vis.length;k++) h+='<th>'+(view.short_columns[vis[k]]||view.columns[vis[k]])+'</th>';
+    h+='</tr></thead><tbody>';
+    groups.forEach(function(grp){
+        h+='<tr><td class="util-hm-label" title="'+prjEsc(grp.label)+'">'+prjEsc(grp.label)+'</td>';
+        for(var k=0;k<vis.length;k++){ var v=utilWeighted(byName,grp.names,vis[k]);
+            if(v==null){ h+='<td class="util-hm-cell" style="background:#f6f7fa;color:#c2c5d2;">·</td>'; }
+            else { var pct=v*100; h+='<td class="util-hm-cell" style="background:'+utilHmColor(pct)+';color:'+(pct>52?'#fff':'#272962')+';">'+Math.round(pct)+'</td>'; }
+        }
+        h+='</tr>';
+    });
+    h+='</tbody></table>';
+    if(!groups.length) h='<div style="text-align:center;color:#9395A2;padding:20px;">No projects match the current filters.</div>';
+    document.getElementById('utilHeatmap').innerHTML=h;
+}
+function utilSetRightMode(m){
+    utilRightMode=m;
+    var t=document.getElementById('utilRightTrendBtn'), hb=document.getElementById('utilRightHeatBtn');
+    if(t) t.className=m==='trend'?'active':''; if(hb) hb.className=m==='heatmap'?'active':'';
+    var tw=document.getElementById('utilTrendWrap'), hm=document.getElementById('utilHeatmap');
+    if(tw) tw.style.display=m==='trend'?'':'none';
+    if(hm) hm.style.display=m==='heatmap'?'':'none';
+    var lg=document.getElementById('utilTrendLegend'); if(lg) lg.style.display=m==='trend'?'':'none';
+    utilRenderRight();
+}
+function utilRenderRight(){ if(utilRightMode==='heatmap') utilHeatmapRender(); else utilTrendRender(); }
+function utilCharts(){ if(!PRJ||!PRJ.utilisation) return; utilRangeRender(); utilRenderRight(); }
+function utilRender(){ if(!PRJ||!PRJ.utilisation) return; utilRenderTable(); utilCharts(); }
+
+function utilInit(){
+    if(!PRJ || !PRJ.utilisation) return;
+    utilExpanded={}; utilChartLinked=true; utilRightMode='trend';
+    prjFilters.utilchart={status:[],region:[],country:[],company:[],project:[]};
+    if(utilRangeChart){ utilRangeChart.destroy(); utilRangeChart=null; }
+    if(utilTrendChart){ utilTrendChart.destroy(); utilTrendChart=null; }
+    prjBuildFilters('utilchart');
+    utilCloneChartControls();
+    utilPopulateRange();
+    utilPopulateLookback();
+    utilSetLink(true);
+    utilSetRightMode('trend');
+}
+
+// Utilisation tree expand toggles.
+document.addEventListener('click', function(e){
+    var tr=e.target.closest('tr[data-util-x]'); if(!tr) return;
+    var key=tr.getAttribute('data-util-x');
+    utilExpanded[key]=!utilExpanded[key];
+    utilRenderTable();
+});
+
 /* === EVENTS === */
 function onPeriodChange() {
     updateRangeSelectors();
@@ -5245,6 +5619,7 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '    <button class="lng-subtab-btn active" id="lngSubOverview" onclick="lngSetSubtab(\'overview\')">Overview</button>\n'
     html += '    <button class="lng-subtab-btn" id="lngSubOutlook" onclick="lngSetSubtab(\'outlook\')">Supply Outlook</button>\n'
     html += '    <button class="lng-subtab-btn" id="lngSubCapacity" onclick="lngSetSubtab(\'capacity\')">Capacity</button>\n'
+    html += '    <button class="lng-subtab-btn" id="lngSubUtilisation" onclick="lngSetSubtab(\'utilisation\')">Utilisation</button>\n'
     html += '    <button class="lng-subtab-btn" id="lngSubProjects" onclick="lngSetSubtab(\'projects\')">Projects</button>\n'
     html += '</div>\n\n'
 
@@ -5661,6 +6036,75 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '        <div class="chart-controls prj-chart-head"><div class="chart-title-inline" id="capUnrTitle">Unrisked Capacity</div></div>\n'
     html += '        <div class="chart-canvas-wrap"><canvas id="capUnrCanvas"></canvas></div>\n'
     html += '        <div class="custom-legend" id="capUnrLegend"></div>\n'
+    html += '      </div>\n'
+    html += '    </div>\n'
+    html += '  </div>\n'
+    # Utilisation pane — one table + seasonality (left) + Trend|Heatmap (right).
+    html += '  <div class="prj-pane" id="prjPaneUtilisation">\n'
+    html += '    <div class="prj-outlook-controls">\n'
+    html += '      <div class="control-group"><label>View by</label>\n'
+    html += '        <select id="utilViewBy" onchange="utilRender()">\n'
+    html += '          <option value="region" selected>Region</option>\n'
+    html += '          <option value="country">Country</option>\n'
+    html += '          <option value="project">Project</option>\n'
+    html += '        </select>\n'
+    html += '      </div>\n'
+    html += '      <div class="control-group"><label>Period</label>\n'
+    html += '        <select id="utilPeriod" onchange="utilOnPeriod()">\n'
+    html += '          <option value="Monthly">Monthly</option>\n'
+    html += '          <option value="Quarterly">Quarterly</option>\n'
+    html += '          <option value="Annual CY" selected>Annual (Calendar Year)</option>\n'
+    html += '          <option value="Gas Year">Annual (Gas Year)</option>\n'
+    html += '          <option value="Winter">Winter (Oct-Mar)</option>\n'
+    html += '          <option value="Summer">Summer (Apr-Sep)</option>\n'
+    html += '        </select>\n'
+    html += '      </div>\n'
+    html += '      <div class="control-group"><label>From</label><select id="utilFrom" onchange="utilRender()"></select></div>\n'
+    html += '      <div class="control-group"><label>To</label><select id="utilTo" onchange="utilRender()"></select></div>\n'
+    html += '      <span class="util-note">Roll-ups are capacity-weighted (Σ util×capacity ÷ Σ capacity).</span>\n'
+    html += '    </div>\n'
+    html += '    <div class="prj-table-container">\n'
+    html += '      <table class="prj-table prj-outlook-table util-table"><thead id="utilHead"></thead><tbody id="utilBody"></tbody></table>\n'
+    html += '    </div>\n'
+    # Chart filters: link toggle + (when unlinked) an independent filter set (no Unit — util is a %).
+    html += '    <div class="prj-chart-filters">\n'
+    html += '      <div class="prj-chart-filters-head">\n'
+    html += '        <span class="lng-block-title">Chart filters</span>\n'
+    html += '        <button class="prj-link-btn active" id="utilLinkBtn" onclick="utilToggleLink()">✓ Linked to table filters</button>\n'
+    html += '      </div>\n'
+    html += '      <div class="prj-chart-filter-controls" id="utilChartFilterControls">\n'
+    html += '        <div class="prj-filter-group"><label>View by</label><select id="utilcViewBy" onchange="utilCharts()"></select></div>\n'
+    html += '        <div class="prj-filter-group"><label>Period</label><select id="utilcPeriod" onchange="utilcOnPeriod()"></select></div>\n'
+    html += '        <div class="prj-filter-group"><label>From</label><select id="utilcFrom" onchange="utilCharts()"></select></div>\n'
+    html += '        <div class="prj-filter-group"><label>To</label><select id="utilcTo" onchange="utilCharts()"></select></div>\n'
+    for lbl, fid in [("Status", "utilcFilterStatus"), ("Region", "utilcFilterRegion"),
+                     ("Country", "utilcFilterCountry"), ("Company", "utilcFilterCompany"),
+                     ("Project", "utilcFilterProject")]:
+        html += f'        <div class="prj-filter-group"><label>{lbl}</label><div class="multi-select" id="{fid}"></div></div>\n'
+    html += '        <button class="prj-filter-reset" onclick="prjResetFilters(\'utilchart\')">Reset</button>\n'
+    html += '      </div>\n'
+    html += '    </div>\n'
+    # Charts: seasonality (left) + Trend|Heatmap (right)
+    html += '    <div class="prj-outlook-charts">\n'
+    html += '      <div class="grid-quad">\n'
+    html += '        <div class="chart-controls prj-chart-head">\n'
+    html += '          <div class="control-group"><label>Average range</label><select id="utilRangeLookback" onchange="utilCharts()"></select></div>\n'
+    html += '          <div class="chart-title-inline" id="utilRangeTitle">Utilisation Seasonality</div>\n'
+    html += '        </div>\n'
+    html += '        <div class="chart-canvas-wrap"><canvas id="utilRangeCanvas"></canvas></div>\n'
+    html += '        <div class="custom-legend" id="utilRangeLegend"></div>\n'
+    html += '      </div>\n'
+    html += '      <div class="grid-quad">\n'
+    html += '        <div class="chart-controls prj-chart-head">\n'
+    html += '          <div class="control-group"><div class="value-toggle">\n'
+    html += '            <button id="utilRightTrendBtn" class="active" onclick="utilSetRightMode(\'trend\')">Trend</button>\n'
+    html += '            <button id="utilRightHeatBtn" onclick="utilSetRightMode(\'heatmap\')">Heatmap</button>\n'
+    html += '          </div></div>\n'
+    html += '          <div class="chart-title-inline" id="utilRightTitle">Utilisation Trend</div>\n'
+    html += '        </div>\n'
+    html += '        <div class="chart-canvas-wrap" id="utilTrendWrap"><canvas id="utilTrendCanvas"></canvas></div>\n'
+    html += '        <div class="util-heatmap-wrap" id="utilHeatmap" style="display:none;"></div>\n'
+    html += '        <div class="custom-legend" id="utilTrendLegend"></div>\n'
     html += '      </div>\n'
     html += '    </div>\n'
     html += '  </div>\n'
