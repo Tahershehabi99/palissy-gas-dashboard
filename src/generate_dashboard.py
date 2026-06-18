@@ -1860,6 +1860,8 @@ body.projects-tab .lng-subtab-bar { display: flex; }
 /* Supply Outlook charts row (range left, stacked area right) */
 .prj-outlook-charts {
     display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 14px;
+    align-items: start;   /* don't stretch columns to equal height (a taller legend
+                             on one side was inflating the other chart's canvas) */
 }
 .prj-outlook-charts .grid-quad { min-width: 0; display: flex; flex-direction: column; }
 @media (max-width: 1100px) { .prj-outlook-charts { grid-template-columns: 1fr; } }
@@ -5408,8 +5410,20 @@ function utilTrendRender(){
     var labels=[]; for(var k=0;k<vis.length;k++) labels.push(view.short_columns[vis[k]]||view.columns[vis[k]]);
     var datasets=groups.map(function(grp,g){
         var color=utilGroupColor(viewBy,grp.label,g);
-        var data=vis.map(function(ci){ var v=utilWeighted(byName,grp.names,ci); return v==null?null:v*100; });
-        return { label:grp.label, data:data, borderColor:color, backgroundColor:'rgba(0,0,0,0)', borderWidth:2, pointRadius:0, tension:0.25, fill:false, spanGaps:true };
+        var data=vis.map(function(ci){ var v=utilWeighted(byName,grp.names,ci); return (v==null)?null:v*100; });
+        // The line begins at the first month with actual utilisation — leading
+        // pre-start points become gaps (no drop-to-zero-then-jump). Mark that start
+        // with a distinct red dot, but only if the series begins WITHIN the window
+        // (a project already running at the left edge isn't a "new start").
+        var startIdx=-1;
+        for(var k=0;k<data.length;k++){ if(data[k]!=null && data[k]>0){ startIdx=k; break; } }
+        for(var k=0;k<startIdx;k++) data[k]=null;
+        var pr=[], pbg=[], pbd=[];
+        for(var k=0;k<data.length;k++){ pr.push(0); pbg.push(color); pbd.push(color); }
+        if(startIdx>0){ pr[startIdx]=5; pbg[startIdx]='#C00000'; pbd[startIdx]='#ffffff'; }
+        return { label:grp.label, data:data, borderColor:color, backgroundColor:'rgba(0,0,0,0)', borderWidth:2,
+                 pointRadius:pr, pointBackgroundColor:pbg, pointBorderColor:pbd, pointBorderWidth:1.5,
+                 tension:0.25, fill:false, spanGaps:false };
     });
     document.getElementById('utilRightTitle').textContent='Utilisation Trend (%)';
     var opts=chartOptionsLine('mmt'); opts.scales.y.title.text='Utilisation (%)'; opts.scales.y.ticks=opts.scales.y.ticks||{}; opts.scales.y.ticks.callback=function(v){return v+'%';};
