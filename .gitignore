@@ -6,8 +6,11 @@ __pycache__/
 # Context folder (contains source model and brand assets - too large / sensitive)
 Context/
 
-# Input data (contains proprietary model data)
+# Input data (the user's pasted master + archive of old masters - proprietary)
 INPUT/
+
+# Working data (auto-generated clean extracts + preflight manifest - proprietary)
+WORKING/
 
 # ClaudeDocs (development notes, not needed for deployment)
 ClaudeDocs/

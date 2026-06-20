@@ -14,7 +14,7 @@ import os
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 SOURCE_FILE = os.path.join(PROJECT_DIR, "Context", "AKAP Global Gas Model.xlsx")
-OUTPUT_FILE = os.path.join(PROJECT_DIR, "INPUT", "gas_model_input.xlsx")
+OUTPUT_FILE = os.path.join(PROJECT_DIR, "WORKING", "gas_model_input.xlsx")
 
 def create_input_template():
     print("Reading source model...")
@@ -150,6 +150,7 @@ def create_input_template():
     ws_inst.column_dimensions['A'].width = 80
 
     # Save
+    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
     wb.save(OUTPUT_FILE)
     print(f"Input template saved to: {OUTPUT_FILE}")
     print(f"  - Sheet 'Monthly Data': {output_row - 5} data rows x {last_col - 1} months")
