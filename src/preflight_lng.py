@@ -20,6 +20,7 @@ inserted anywhere in the list is reported precisely.
 """
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import openpyxl
@@ -28,6 +29,33 @@ from extract_lng_input import SRC, REGION_OF, COUNTRIES, _clean, locate_exports
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "WORKING" / "lng_manifest.json"   # pipeline state (not in INPUT)
+
+# Assumptions-tab columns we fingerprint per project so a change to any of them is
+# REPORTED on the next update (the values already flow through automatically; this
+# is the visible confirmation / "did I paste the right file?" check). Status is
+# tracked separately (it can be a structural-ish change). Keyed col -> label.
+ASSUMP_COLS = [
+    (7, "CoS"), (8, "util forecast"), (9, "util decline"),
+    (6, "start"), (10, "decline start"), (4, "unrisked (mmt)"),
+]
+# Ownership lives across several columns; compared as one group (operator col 23,
+# partners col 24, primary stake col 25, partner stakes S1..S7 cols 26-32).
+OWNERSHIP_COLS = [23, 24, 25] + list(range(26, 33))
+
+
+def _av(v):
+    """Normalise an Assumptions cell to a stable, JSON-serialisable value."""
+    if isinstance(v, datetime):
+        return v.strftime("%Y-%m-%d")
+    if isinstance(v, float):
+        return round(v, 6)
+    if isinstance(v, str):
+        return v.strip()
+    return v
+
+
+def _fmt(v):
+    return "(blank)" if v in (None, "") else str(v)
 
 
 def snapshot():
@@ -38,11 +66,17 @@ def snapshot():
         me = wb["Monthly Exports"]
         asm = wb["Assumptions"]
         loc = locate_exports(me)                       # raises if an anchor is missing
-        status_of = {}
+        # Read the Assumptions tab once: status + the fingerprinted assumption fields
+        # + an ownership signature, keyed by project name.
+        status_of, assum_of = {}, {}
         for r in range(3, asm.max_row + 1):
             nm = _clean(asm.cell(r, 1).value)
-            if nm and nm != "Total":
-                status_of[nm] = _clean(asm.cell(r, 3).value) or ""
+            if not nm or nm == "Total":
+                continue
+            status_of[nm] = _clean(asm.cell(r, 3).value) or ""
+            a = {label: _av(asm.cell(r, c).value) for c, label in ASSUMP_COLS}
+            a["ownership"] = [_av(asm.cell(r, c).value) for c in OWNERSHIP_COLS]
+            assum_of[nm] = a
         # Walk the Reported section exactly as the extractor does: mains (M) only,
         # country assigned on the country aggregate row.
         projects, pending = {}, []
@@ -57,7 +91,8 @@ def snapshot():
                 for pn, pm in pending:
                     if pm == "M":
                         projects[pn] = {"country": nm, "region": REGION_OF.get(nm, nm),
-                                        "status": status_of.get(pn, "")}
+                                        "status": status_of.get(pn, ""),
+                                        "assumptions": assum_of.get(pn, {})}
                 pending = []
             elif nm == "Grand total":
                 pending = []
@@ -99,28 +134,53 @@ def main():
     new_regions = sorted(set(snap["regions"]) - set(old["regions"]))
     new_countries = sorted(set(snap["countries"]) - set(old["countries"]))
 
+    # --- Assumptions-tab changes on surviving projects (CoS / utilisation / start /
+    #     decline / unrisked / ownership). Reported, never blocking — these flow into
+    #     the build automatically; this is the visible confirmation of what changed. ---
+    assumpchg = []
+    for p in sorted(on & nn):
+        oa = old["projects"][p].get("assumptions") or {}
+        na = snap["projects"][p].get("assumptions") or {}
+        if not oa or not na:
+            continue                       # manifest predates this check -> nothing to compare
+        changes = []
+        for _c, label in ASSUMP_COLS:
+            if oa.get(label) != na.get(label):
+                changes.append(f"{label} {_fmt(oa.get(label))}->{_fmt(na.get(label))}")
+        if oa.get("ownership") != na.get("ownership"):
+            changes.append("ownership/stakes")
+        if changes:
+            assumpchg.append((p, changes))
+
     print(f"[PREFLIGHT] master: {len(snap['projects'])} projects | "
-          f"added {len(added)}, removed {len(removed)}, status-changes {len(statchg)}")
+          f"added {len(added)}, removed {len(removed)}, status-changes {len(statchg)}, "
+          f"assumption-changes {len(assumpchg)}")
     for p in added:
         print(f"   + NEW PROJECT: {p}  ({snap['projects'][p]['country']}, {snap['projects'][p]['status']})")
     for p in removed:
         print(f"   - REMOVED/RENAMED: {p}")
     for p, o, n in statchg:
         print(f"   ~ STATUS CHANGE: {p}: {o or '(blank)'} -> {n or '(blank)'}")
+    for p, ch in assumpchg:
+        print(f"   ~ ASSUMPTIONS: {p}: {', '.join(ch)}")
     if new_regions:
         print(f"   ! NEW REGION(S): {new_regions}")
     if new_countries:
         print(f"   ! NEW COUNTRY(IES): {new_countries}")
+    if old.get("projects") and not any("assumptions" in old["projects"][p] for p in on & nn):
+        print("   (note: previous manifest had no assumptions fingerprint — assumption "
+              "changes will be reported from the NEXT update onward.)")
 
     if removed or new_regions or new_countries:
         print("STOP - structural change needs review (removed/renamed project or new "
               "region/country). Call Claude before updating.")
         return 2
-    if added:
-        print("PROCEED (with notice) - new project(s) in existing regions; check their "
-              "colour/region mapping after the build.")
+    if added or assumpchg or statchg:
+        print("PROCEED - changes detected above (new projects / status / assumptions); all "
+              "flow into the build automatically. Check new projects' colour/region mapping.")
         return 0
-    print("OK - no structural change. Safe to auto-update (value/status updates only).")
+    print("OK - no structural or assumption changes detected vs the last update. "
+          "(If you expected changes, check you pasted the latest master.)")
     return 0
 
 
