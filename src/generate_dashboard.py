@@ -268,6 +268,9 @@ DATASETS = [
         "unit_config": GAS_UNIT_CONFIG,
         "stock_rows": ["Opening Storage", "Closing Storage", "Storage percentage"],
         "pct_rows": ["Storage percentage"],
+        # Last actual month (year, month); later periods are forecast. Gas/power
+        # come from a separate model with no in-data boundary marker, so set it here.
+        "actual_end": (2026, 5),
         "use_hierarchy": True,
         "skip_label_rows": [],
         "charts_enabled": False,
@@ -314,6 +317,8 @@ DATASETS = [
         "units": ["TWh", "BCFE", "BCFE/d"],
         "default_unit": "TWh",
         "unit_config": POWER_UNIT_CONFIG,
+        # Last actual month (year, month); later periods are forecast.
+        "actual_end": (2026, 5),
         "stock_rows": [],
         "pct_rows": [],
         "use_hierarchy": False,
@@ -774,6 +779,9 @@ def build_dataset_blob(config):
         "hierarchy": ui_hierarchy,
         "selectable_start": DISPLAY_START_YEAR,
         "selectable_end": DISPLAY_END_YEAR,
+        # Actual/forecast boundary (year, month) -> {year, month}; None if unset.
+        "latest_actual": ({"year": config["actual_end"][0], "month": config["actual_end"][1]}
+                          if config.get("actual_end") else None),
         # LNG composite metadata (ignored by gas/power).
         "range_kind": config.get("range_kind"),
         "chart_series": config.get("chart_series"),
@@ -1411,6 +1419,17 @@ tr.pct-row td:first-child { background: #fbfbfd; }
 td.col-highlight { background-color: rgba(39, 41, 98, 0.07) !important; }
 td.row-highlight { background-color: rgba(39, 41, 98, 0.07) !important; }
 td.cell-highlight { background-color: rgba(39, 41, 98, 0.13) !important; }
+/* The sticky first column must stay OPAQUE when highlighted, otherwise the
+   translucent tint lets horizontally-scrolled cells bleed through and the row
+   label overlaps the numbers (Closing Storage etc.). Use the flattened colours. */
+td:first-child.col-highlight, td:first-child.row-highlight { background-color: #f0f0f4 !important; }
+td:first-child.cell-highlight { background-color: #e3e3eb !important; }
+/* Actual/forecast boundary (feedback #3): a divider before the first forecast
+   column, a lighter header tint over the forecast span, and subtle body shading. */
+td.fc-col { background-color: rgba(39, 41, 98, 0.04); }
+th.fc-col { background: #3a3d70; }
+td.fc-start, th.fc-start { border-left: 2px solid rgba(39, 41, 98, 0.55); }
+.fc-note { color: #8a5a00; font-style: italic; font-weight: bold; }
 
 /* Growth table */
 .growth-section { margin: 0 20px; }
@@ -1803,6 +1822,10 @@ body.lng-composite .main-grid { display: none; }
 .growth-controls.lng-head-exports { background: #eff5ec; }   /* exports = light green */
 .lng-grid .table-container { max-height: 340px; }
 .lng-grid .growth-table-container { max-height: 320px; margin-bottom: 0; }
+/* The "Change in …" blocks wrap their table in a .growth-section (margin: 0 20px),
+   which would inset them vs the plain Imports/Exports tables. Zero it so every
+   stacked table shares the same left edge. */
+.lng-block .growth-section { margin: 0; }
 .lng-charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .lng-charts-row .grid-quad { min-width: 0; }
 @media (max-width: 1100px) { .lng-charts-row { grid-template-columns: 1fr; } }
@@ -2007,16 +2030,6 @@ table.util-heatmap td.util-hm-empty { background: #f6f7fa; color: #c2c5d2; }
 .scen-modal-yes:hover { filter: brightness(0.92); }
 .scen-bar-label { font-size: 12.5px; font-weight: bold; color: #9a5b00; }
 .scen-bar.scen-clean .scen-bar-label { color: """ + grey + """; font-weight: normal; }
-.scen-view-cap { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: """ + grey + """; margin-right: 2px; }
-.scen-view-toggle { display: flex; align-items: center; gap: 6px; }
-.scen-view-toggle button {
-    font-family: 'Gotham Book','Segoe UI',Calibri,sans-serif; font-size: 11.5px; font-weight: bold;
-    padding: 5px 14px; border: 1.5px solid """ + db + """; background: #fff; color: """ + db + """;
-    cursor: pointer;
-}
-.scen-view-toggle button:first-of-type { border-radius: 7px 0 0 7px; border-right: none; }
-.scen-view-toggle button:last-of-type { border-radius: 0 7px 7px 0; }
-.scen-view-toggle button.active { background: """ + db + """; color: #fff; }
 /* Adjust bar on the Projects pane */
 .scen-adjust-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-bottom: 12px; }
 .scen-adjust-btn {
@@ -2039,6 +2052,21 @@ table.util-heatmap td.util-hm-empty { background: #f6f7fa; color: #c2c5d2; }
 }
 .scen-reset-btn:hover { background: """ + red + """; color: #fff; }
 .scen-adjust-hint { font-size: 11.5px; font-style: italic; color: """ + grey + """; }
+/* "Go to the Projects tab" note shown when adjusting from another sub-tab. */
+.scen-goto-note { font-size: 12px; color: """ + db + """; display: inline-flex; align-items: center; gap: 4px; }
+.scen-goto-link { font-family: inherit; font-size: 12px; font-weight: bold; color: """ + db + """;
+    background: none; border: none; padding: 0; text-decoration: underline; cursor: pointer; }
+.scen-goto-link:hover { color: """ + red + """; }
+/* How-to hover help (Projects tab, adjust mode). */
+.scen-howto { position: relative; display: inline-flex; align-items: center; }
+.scen-howto-btn { font-size: 11.5px; font-weight: bold; color: """ + db + """; cursor: help;
+    border: 1.5px dashed rgba(39,41,98,0.4); border-radius: 7px; padding: 5px 12px; }
+.scen-howto-pop { display: none; position: absolute; top: calc(100% + 8px); left: 0; width: 320px;
+    background: #fff; border: 1px solid """ + border + """; border-radius: 10px; padding: 12px 14px;
+    box-shadow: 0 10px 34px rgba(0,0,0,0.18); z-index: 50; font-size: 12px; font-weight: normal;
+    color: """ + db + """; line-height: 1.5; text-align: left; white-space: normal; }
+.scen-howto-pop::before { content: ''; position: absolute; top: -10px; left: 0; right: 0; height: 10px; }
+.scen-howto:hover .scen-howto-pop, .scen-howto:focus-within .scen-howto-pop { display: block; }
 .scen-inp, .scen-sel { width: 64px; padding: 3px 5px; border: 1.5px solid """ + db + """; border-radius: 5px; font-family: inherit; font-size: 12px; color: """ + db + """; }
 .scen-sel { width: auto; }
 .scen-note { font-size: 11px; font-style: italic; color: #9a5b00; margin: 2px 0 6px; }
@@ -2251,6 +2279,7 @@ function formatNum(val, isPct) {
 }
 
 function formatGrowth(val, isPctRow) {
+    if (val==='nm') return 'n.m.';                       // % change off a non-positive base
     if (val===null||val===undefined||!isFinite(val)) return '';
     if (growthMode==='pct') {
         var pct = val*100;
@@ -2329,6 +2358,48 @@ function updateRangeSelectors() {
     fs.value = def[0]; ts.value = def[1];
 }
 
+/* ---- Persist Unit / Period / From-To across tab switches (feedback #2). The
+   shared top bar serves gas, power and Global LNG (Overview). Period already
+   persists (static selector); we remember the unit and the from/to YEARS and
+   re-apply them when valid for the incoming dataset. From/to are stored by year
+   so they map correctly even when datasets/periods have different column axes. ---- */
+var sharedUIState = null;
+function captureSharedUIState() {
+    if (DATA && DATA.projects_tab) return;   // the LNG Projects tab has its own control bar
+    var ps=document.getElementById('periodSelector'), us=document.getElementById('unitSelector');
+    var fs=document.getElementById('rangeFrom'), ts=document.getElementById('rangeTo');
+    if (!ps || !us || !fs || !ts || !DATA.views) return;
+    var view=DATA.views[ps.value]; if (!view) return;
+    var sel=getSelectableIndices(view), fi=parseInt(fs.value), ti=parseInt(ts.value);
+    sharedUIState = {
+        period: ps.value, unit: us.value,
+        fromYear: (sel[fi]!=null) ? view.col_meta[sel[fi]].year : null,
+        toYear:   (sel[ti]!=null) ? view.col_meta[sel[ti]].year : null,
+    };
+}
+function applySharedUIState() {
+    if (!sharedUIState) return;
+    var us=document.getElementById('unitSelector');
+    if (us && sharedUIState.unit) {
+        for (var i=0;i<us.options.length;i++) { if (us.options[i].value===sharedUIState.unit) { us.value=sharedUIState.unit; break; } }
+    }
+    var period=document.getElementById('periodSelector').value;
+    var view=DATA.views && DATA.views[period]; if (!view) return;
+    var sel=getSelectableIndices(view); if (!sel.length) return;
+    var fs=document.getElementById('rangeFrom'), ts=document.getElementById('rangeTo'); if (!fs || !ts) return;
+    function findIdx(year, isTo) {
+        if (year==null) return null;
+        var res=null;
+        for (var i=0;i<sel.length;i++) { var y=view.col_meta[sel[i]].year;
+            if (!isTo) { if (y>=year) return i; } else { if (y<=year) res=i; } }
+        return isTo ? res : sel.length-1;   // clamp: from past the end -> last col
+    }
+    var fi=findIdx(sharedUIState.fromYear,false), ti=findIdx(sharedUIState.toYear,true);
+    if (fi!=null) fs.value=fi;
+    if (ti!=null) ts.value=ti;
+    if (parseInt(fs.value) > parseInt(ts.value)) ts.value=fs.value;
+}
+
 function getVisibleIndices() {
     var period = document.getElementById('periodSelector').value;
     var view = DATA.views[period];
@@ -2353,10 +2424,32 @@ function resetRange() {
 function updatePeriodNote() {
     var p = document.getElementById('periodSelector').value;
     var el = document.getElementById('periodNote');
-    if (p==='Summer') el.textContent = 'Summer 2025 = April 2025 to September 2025';
-    else if (p==='Winter') el.textContent = 'Winter 24/25 = October 2024 to March 2025';
-    else el.textContent = '';
+    var msg = '';
+    if (p==='Summer') msg = 'Summer 2025 = April 2025 to September 2025';
+    else if (p==='Winter') msg = 'Winter 24/25 = October 2024 to March 2025';
+    var fc = forecastNoteText(DATA && DATA.latest_actual);
+    el.innerHTML = msg + (msg && fc ? ' &nbsp;·&nbsp; ' : '') + fc;
 }
+/* ---- Actual / forecast boundary helpers (feedback #3) ---- */
+var FC_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function forecastNoteText(la){
+    if(!la) return '';
+    return '<span class="fc-note">Actuals through '+FC_MONTHS[(la.month||1)-1]+' '+la.year+' · later periods are forecast</span>';
+}
+// Index of the first column that contains forecast data (its period extends past
+// the dataset's last actual month). -1 if none/unknown.
+function firstForecastIdx(colMeta, la){
+    if(!la || !colMeta) return -1;
+    for(var i=0;i<colMeta.length;i++){ var m=colMeta[i];
+        var endM = m.month ? m.month : (m.quarter ? m.quarter*3 : 12);
+        if(m.year>la.year || (m.year===la.year && endM>la.month)) return i;
+    }
+    return -1;
+}
+// Class fragment for a column cell given the forecast-start index (ff).
+function fcCls(ci, ff){ return (ff>=0 && ci>=ff) ? (ci===ff ? ' fc-col fc-start' : ' fc-col') : ''; }
+// Ready-to-insert class attribute (' class="..."' or ''); merges any base classes.
+function fcAttr(ci, ff, base){ var c=((base||'')+fcCls(ci,ff)).trim(); return c ? ' class="'+c+'"' : ''; }
 
 /* === GROWTH COMPUTATION === */
 function getRate(base, days) { return base/days; }
@@ -2419,9 +2512,10 @@ function computeGrowthCell(rowBase, days, meta, idx, vn, gt, isStock) {
     function result(cur,prev) {
         if (prev===null||cur===null) return null;       // no comparison period -> blank
         if (growthMode==='pct') {
-            // prev==0: a 0 -> 0 period is genuinely 0% change (show it); 0 -> non-zero
-            // is a start-from-nothing with no finite % (leave blank).
-            if (prev===0) return cur===0 ? 0 : null;
+            // % change is only meaningful off a POSITIVE base. A non-positive prior
+            // value makes the sign/size misleading (neg->pos, neg->neg) or undefined
+            // (0->non-zero) -> show "n.m." (not meaningful). 0->0 is a real 0% change.
+            if (prev<=0) return (prev===0 && cur===0) ? 0 : 'nm';
             return cur/prev-1;
         }
         return cur-prev;
@@ -2551,6 +2645,7 @@ function updateDatasetUI() {
 
 function switchDataset(key) {
     if (key === currentKey && !embedActive) return;  // leaving an embed tab must re-render
+    captureSharedUIState();   // remember Unit/Period/From-To of the outgoing dataset (feedback #2)
     embedActive = false;
     currentKey = key;
     DATA = ALL_DATASETS[key];
@@ -2564,6 +2659,7 @@ function switchDataset(key) {
     if (DATA.projects_tab) { prjInit(); return; }   // own filter bar; no unit/period machinery
     rebuildUnitSelector();
     updateRangeSelectors();
+    applySharedUIState();   // re-apply remembered Unit/From-To where valid (feedback #2)
     updateGrowthTypeSelector();
     updatePeriodNote();
     if (DATA.composite) {
@@ -2623,11 +2719,12 @@ function updateTable() {
         if (!totalRowData) showAsPct = false;  // safety
     }
 
+    var ff = firstForecastIdx(view.col_meta, DATA.latest_actual);
     var thead = document.getElementById('tableHead');
     var headerLabel = showAsPct ? '%' : unitLabel;
     var hHtml = '<tr><th>'+headerLabel+'<span class="unit-label">('+period+')</span></th>';
     for (var i=0;i<vis.length;i++) {
-        hHtml += '<th>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
+        hHtml += '<th'+fcAttr(vis[i],ff)+'>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
     }
     thead.innerHTML = hHtml+'</tr>';
 
@@ -2663,7 +2760,7 @@ function updateTable() {
             } else {
                 dv = formatNum(computeDisplayValue(baseVal, unitKey, isStock, false, days[ci]), false);
             }
-            bHtml+='<td>'+dv+'</td>';
+            bHtml+='<td'+fcAttr(ci,ff)+'>'+dv+'</td>';
         }
         bHtml+='</tr>';
         if (hasCh) {
@@ -2682,7 +2779,7 @@ function updateTable() {
                     } else {
                         cdv = formatNum(computeDisplayValue(cd.base[ci], unitKey, false, false, days[ci]), false);
                     }
-                    bHtml+='<td>'+cdv+'</td>';
+                    bHtml+='<td'+fcAttr(ci,ff)+'>'+cdv+'</td>';
                 }
                 bHtml+='</tr>';
             }
@@ -2705,10 +2802,11 @@ function updateGrowthTable() {
     var gt = document.getElementById('growthTypeSelector').value;
     growthType = gt;
 
+    var ff = firstForecastIdx(meta, DATA.latest_actual);
     var thead = document.getElementById('growthHead');
     var hHtml = '<tr><th>Change</th>';
     for (var i=0;i<vis.length;i++) {
-        hHtml+='<th>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
+        hHtml+='<th'+fcAttr(vis[i],ff)+'>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
     }
     thead.innerHTML = hHtml+'</tr>';
 
@@ -2728,9 +2826,9 @@ function updateGrowthTable() {
         for (var i=0;i<vis.length;i++) {
             var ci=vis[i];
             var gv = computeGrowthCell(rowData.base,days,meta,ci,period,gt,isStock||isPct);
-            if (gv===null) { bHtml+='<td></td>'; continue; }
+            if (gv===null) { bHtml+='<td'+fcAttr(ci,ff)+'></td>'; continue; }
             var cls = gv>0.0001?'g-pos':(gv<-0.0001?'g-neg':'');
-            bHtml+='<td'+(cls?' class="'+cls+'"':'')+'>'+formatGrowth(gv,isPct)+'</td>';
+            bHtml+='<td'+fcAttr(ci,ff,cls)+'>'+formatGrowth(gv,isPct)+'</td>';
         }
         bHtml+='</tr>';
         if (hasCh) {
@@ -2742,9 +2840,9 @@ function updateGrowthTable() {
                 for (var i=0;i<vis.length;i++) {
                     var ci=vis[i];
                     var gv=computeGrowthCell(cd.base,days,meta,ci,period,gt,false);
-                    if (gv===null) { bHtml+='<td></td>'; continue; }
+                    if (gv===null) { bHtml+='<td'+fcAttr(ci,ff)+'></td>'; continue; }
                     var cls=gv>0.0001?'g-pos':(gv<-0.0001?'g-neg':'');
-                    bHtml+='<td'+(cls?' class="'+cls+'"':'')+'>'+formatGrowth(gv,false)+'</td>';
+                    bHtml+='<td'+fcAttr(ci,ff,cls)+'>'+formatGrowth(gv,false)+'</td>';
                 }
                 bHtml+='</tr>';
             }
@@ -3950,6 +4048,7 @@ var lngExpanded = { imports: {}, exports: {} };
 var lngChangeMode = { imports: 'pct', exports: 'pct' };
 var lngChangeType = { imports: 'yoy', exports: 'yoy' };
 var lngStackType  = { imports: 'bar', exports: 'bar' };
+var lngStackPeriod = { imports: null, exports: null };   // build-up charts follow the top Period; repopulate range only when it changes
 var lngStackSel   = { imports: [], exports: [] };
 // Exports use a hierarchical selector (regions expand to member countries; mixed
 // partial selections allowed). State = selected LEAF / standalone labels, kept
@@ -4028,6 +4127,7 @@ function lngInit() {
     lngChangeMode = { imports: 'pct', exports: 'pct' };
     lngChangeType = { imports: 'yoy', exports: 'yoy' };
     lngStackType  = { imports: 'bar', exports: 'bar' };
+    lngStackPeriod = { imports: null, exports: null };
 
     var imp = lngSubBlob('imports'), exp = lngSubBlob('exports');
     // Imports: flat selectors. Range = countries + a mutex Total (default Total);
@@ -4078,9 +4178,10 @@ function lngRenderTable(subKey) {
     var view = sub.views[period]; if (!view) return;
     var vis = getVisibleIndices(), days = view.days, rows = view.rows, hierarchy = sub.hierarchy;
     var unitLabel = getHeaderUnitLabel(unitKey);
+    var ff = firstForecastIdx(view.col_meta, LNG.latest_actual);
 
     var hHtml = '<tr><th>'+unitLabel+'<span class="unit-label">('+period+')</span></th>';
-    for (var i=0;i<vis.length;i++) hHtml += '<th>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
+    for (var i=0;i<vis.length;i++) hHtml += '<th'+fcAttr(vis[i],ff)+'>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
     document.getElementById(ids.th).innerHTML = hHtml+'</tr>';
 
     var bHtml = '';
@@ -4096,7 +4197,7 @@ function lngRenderTable(subKey) {
         bHtml += hasCh ? '<td data-lng-toggle="'+subKey+':'+h+'">'+lbl+'</td>' : '<td>'+lbl+'</td>';
         for (var i=0;i<vis.length;i++) {
             var ci = vis[i];
-            bHtml += '<td>'+formatNum(computeDisplayValue(rowData.base[ci], unitKey, false, false, days[ci]), false)+'</td>';
+            bHtml += '<td'+fcAttr(ci,ff)+'>'+formatNum(computeDisplayValue(rowData.base[ci], unitKey, false, false, days[ci]), false)+'</td>';
         }
         bHtml += '</tr>';
         if (hasCh) {
@@ -4106,7 +4207,7 @@ function lngRenderTable(subKey) {
                 bHtml += '<tr class="child-row'+hid+'"><td>'+ch.label.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</td>';
                 for (var i=0;i<vis.length;i++) {
                     var ci = vis[i];
-                    bHtml += '<td>'+formatNum(computeDisplayValue(cd.base[ci], unitKey, false, false, days[ci]), false)+'</td>';
+                    bHtml += '<td'+fcAttr(ci,ff)+'>'+formatNum(computeDisplayValue(cd.base[ci], unitKey, false, false, days[ci]), false)+'</td>';
                 }
                 bHtml += '</tr>';
             }
@@ -4123,9 +4224,10 @@ function lngRenderChange(subKey) {
     var vis = getVisibleIndices(), days = view.days, rows = view.rows, meta = view.col_meta, hierarchy = sub.hierarchy;
     var gt = lngChangeType[subKey];
     var prevMode = growthMode; growthMode = lngChangeMode[subKey];   // computeGrowthCell + formatGrowth read this
+    var ff = firstForecastIdx(meta, LNG.latest_actual);
 
     var hHtml = '<tr><th>Change</th>';
-    for (var i=0;i<vis.length;i++) hHtml += '<th>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
+    for (var i=0;i<vis.length;i++) hHtml += '<th'+fcAttr(vis[i],ff)+'>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
     document.getElementById(ids.cth).innerHTML = hHtml+'</tr>';
 
     var bHtml = '';
@@ -4142,9 +4244,9 @@ function lngRenderChange(subKey) {
         for (var i=0;i<vis.length;i++) {
             var ci = vis[i];
             var gv = computeGrowthCell(rowData.base, days, meta, ci, period, gt, false);
-            if (gv===null) { bHtml += '<td></td>'; continue; }
+            if (gv===null) { bHtml += '<td'+fcAttr(ci,ff)+'></td>'; continue; }
             var cls = gv>0.0001 ? 'g-pos' : (gv<-0.0001 ? 'g-neg' : '');
-            bHtml += '<td'+(cls?' class="'+cls+'"':'')+'>'+formatGrowth(gv, false)+'</td>';
+            bHtml += '<td'+fcAttr(ci,ff,cls)+'>'+formatGrowth(gv, false)+'</td>';
         }
         bHtml += '</tr>';
         if (hasCh) {
@@ -4155,9 +4257,9 @@ function lngRenderChange(subKey) {
                 for (var i=0;i<vis.length;i++) {
                     var ci = vis[i];
                     var gv = computeGrowthCell(cd.base, days, meta, ci, period, gt, false);
-                    if (gv===null) { bHtml += '<td></td>'; continue; }
+                    if (gv===null) { bHtml += '<td'+fcAttr(ci,ff)+'></td>'; continue; }
                     var cls = gv>0.0001 ? 'g-pos' : (gv<-0.0001 ? 'g-neg' : '');
-                    bHtml += '<td'+(cls?' class="'+cls+'"':'')+'>'+formatGrowth(gv, false)+'</td>';
+                    bHtml += '<td'+fcAttr(ci,ff,cls)+'>'+formatGrowth(gv, false)+'</td>';
                 }
                 bHtml += '</tr>';
             }
@@ -4321,22 +4423,31 @@ function lngSetStackTypeButtons(subKey) {
     for (var i=0;i<btns.length;i++) { var b = document.getElementById('btn'+pre+'-'+btns[i]); if (b) b.className = (btns[i]===lngStackType[subKey]) ? 'active' : ''; }
 }
 function lngPopulateStackRange(subKey) {
-    var sub = lngSubBlob(subKey), ids = lngIds(subKey), view = sub.views.Monthly;
+    var sub = lngSubBlob(subKey), ids = lngIds(subKey);
+    var period = document.getElementById('periodSelector').value;
+    var view = sub.views[period] || sub.views.Monthly;
     var fs = document.getElementById(ids.from), ts = document.getElementById(ids.to); if (!fs || !ts) return;
     var html = '';
     for (var i=0;i<view.col_meta.length;i++) html += '<option value="'+i+'">'+view.col_meta[i].label+'</option>';
     fs.innerHTML = html; ts.innerHTML = html;
+    // Default range: from the 2025 bucket forward. Monthly trims to a little past
+    // the latest actual (the forecast tail is long); coarser periods show to the end.
     var fromIdx = 0;
-    for (var i=0;i<view.col_meta.length;i++) { if (view.col_meta[i].year===2025 && view.col_meta[i].month===1) { fromIdx = i; break; } }
+    for (var i=0;i<view.col_meta.length;i++) { if (view.col_meta[i].year>=2025) { fromIdx = i; break; } }
     var toIdx = view.col_meta.length-1;
-    if (LNG.latest_actual) toIdx = Math.min(view.col_meta.length-1, LNG.latest_actual.index + 8);
+    if (period==='Monthly' && LNG.latest_actual) toIdx = Math.min(view.col_meta.length-1, LNG.latest_actual.index + 8);
     fs.value = fromIdx; ts.value = toIdx;
+    lngStackPeriod[subKey] = period;
 }
 function lngUpdateStack(subKey) {
     var sub = lngSubBlob(subKey), ids = lngIds(subKey);
     var type = lngStackType[subKey];
     var unitKey = document.getElementById('unitSelector').value;
-    var view = sub.views.Monthly;
+    var period = document.getElementById('periodSelector').value;
+    // Follow the top Period selector; rebuild the from/to range only when it changes
+    // (so toggling series / units doesn't reset the user's chosen window).
+    if (lngStackPeriod[subKey] !== period) lngPopulateStackRange(subKey);
+    var view = sub.views[period] || sub.views.Monthly;
     var fromIdx = parseInt(document.getElementById(ids.from).value), toIdx = parseInt(document.getElementById(ids.to).value);
     if (isNaN(fromIdx) || isNaN(toIdx)) { fromIdx = 0; toIdx = view.col_meta.length-1; }
     if (fromIdx > toIdx) { var t = fromIdx; fromIdx = toIdx; toIdx = t; }
@@ -4586,7 +4697,7 @@ var prjExpanded = {};      // assumptions tree: 'r|Region' | 'c|Region|Country' 
 var prjOutExpanded = {};   // supply-outlook tree expand state (shared by production + change)
 var prjSubtab = 'outlook'; // default sub-tab
 var prjChangeMode = 'pct'; // change table: 'pct' | 'abs'
-var prjNetMode = 'gross';  // Supply Outlook value basis: 'gross' | 'net' (stake-weighted)
+var prjNetMode = 'net';    // Supply Outlook value basis: 'gross' | 'net' (stake-weighted). Default Net.
 var PRJ_BY_NAME = {};      // name -> project (for fast stake lookup)
 var prjRangeChart = null, prjStackChart = null;   // Supply Outlook charts
 var PRJ_DIMS = [['prjFilterStatus','status'],['prjFilterRegion','region'],
@@ -4648,7 +4759,7 @@ function prjNetSel(scope){ return prjFilters[scope].company; }
 function prjNetActive(scope){ return prjNetMode==='net' && prjNetSel(scope).length>0; }
 function prjStakeMul(name, scope){
     if(prjNetMode!=='net') return 1;
-    var sel=prjNetSel(scope); if(!sel.length) return 0;
+    var sel=prjNetSel(scope); if(!sel.length) return 1;   // net w/ no company selected -> behave as gross
     var p=PRJ_BY_NAME[name]; if(!p||!p.co_stakes) return 0;
     var m=0; for(var i=0;i<sel.length;i++){ var s=p.co_stakes[sel[i]]; if(typeof s==='number'&&!isNaN(s)) m+=s; }
     return m;
@@ -4656,14 +4767,12 @@ function prjStakeMul(name, scope){
 // Show the Gross/Net toggle only while companies are selected; revert to gross otherwise.
 function prjUpdateNetToggle(){
     var wrap=document.getElementById('prjNetToggle'); if(!wrap) return;
-    var on=prjFilters.table.company.length>0;
+    // Basis applies to the Supply Outlook only; show next to Company while >=1 company is selected.
+    var on=prjFilters.table.company.length>0 && prjSubtab==='outlook';
     wrap.style.display = on ? 'flex' : 'none';
-    if(!on && prjNetMode!=='gross') prjNetMode='gross';
     var gb=document.getElementById('prjGrossBtn'), nb=document.getElementById('prjNetBtn');
     if(gb) gb.className = prjNetMode==='gross'?'active':'';
     if(nb) nb.className = prjNetMode==='net'?'active':'';
-    var note=document.getElementById('prjNetNote');
-    if(note) note.style.display = (on && prjNetMode==='net') ? 'inline' : 'none';
 }
 function prjSetNetMode(m){ prjNetMode=m; prjUpdateNetToggle(); prjOutlookRender(); }
 
@@ -4675,7 +4784,7 @@ function prjInit(){
                    chart:{status:[],region:[],country:[],company:[],project:[]} };
     prjChartLinked = true;
     prjExpanded = {}; prjOutExpanded = {}; prjSubtab = 'outlook';
-    prjChangeMode = 'pct'; prjNetMode = 'gross';
+    prjChangeMode = 'pct'; prjNetMode = 'net';
     var us = document.getElementById('prjUnit');
     if (us) { us.innerHTML=''; PRJ.units.forEach(function(u){ us.innerHTML += '<option value="'+u+'"'+(u===PRJ.default_unit?' selected':'')+'>'+u+'</option>'; }); }
     if (prjRangeChart) { prjRangeChart.destroy(); prjRangeChart = null; }
@@ -4736,8 +4845,23 @@ function prjSuggestView(scope){
     if(f.country.length) return 'country';
     return 'region';
 }
+// Full value list for a dimension (used by "All" select-all so individual items
+// can then be deselected, e.g. "all countries except Qatar").
+function prjAllValues(dimKey){
+    if(dimKey==='status')  return PRJ.status_order.slice();
+    if(dimKey==='region')  return PRJ.region_order.slice();
+    if(dimKey==='country') return PRJ.countries.slice();
+    if(dimKey==='company') return PRJ.companies.slice();
+    if(dimKey==='project') return PRJ.projects.map(function(p){return p.name;});
+    return [];
+}
 function prjToggle(scope, dimKey, val){
-    if(val==='__ALL__'){ prjFilters[scope][dimKey]=[]; }
+    if(val==='__ALL__'){
+        // "All" now SELECTS every item individually (so you can untick one). Click
+        // again when everything is selected to clear back to the all-shown baseline.
+        var all=prjAllValues(dimKey), cur=prjFilters[scope][dimKey];
+        prjFilters[scope][dimKey] = (cur.length>=all.length && all.length>0) ? [] : all;
+    }
     else { var arr=prjFilters[scope][dimKey], i=arr.indexOf(val); if(i>=0) arr.splice(i,1); else arr.push(val); }
     // Selecting a company -> project view; a country -> country view; region -> region.
     // (A status toggle doesn't change the view.) Applies to the matching scope's
@@ -4752,22 +4876,26 @@ function prjToggle(scope, dimKey, val){
 function prjResetFilters(scope){
     prjFilters[scope]={status:[],region:[],country:[],company:[],project:[]};
     if(scope==='table'){
-        // Reset returns the whole Supply Outlook AND Capacity to a fresh state:
-        // regional view, default period/range, Gross basis.
-        prjNetMode='gross';
-        var vb=document.getElementById('prjViewBy'); if(vb) vb.value='region';
-        var pd=document.getElementById('prjPeriod'); if(pd) pd.value='Annual CY';
-        prjOutlookPopulateRange();
-        // Capacity sub-tab shares this filter bar — reset its controls too.
-        capNetMode='gross'; capExpanded={};
-        var cvb=document.getElementById('capViewBy'); if(cvb) cvb.value='region';
-        var cpd=document.getElementById('capPeriod'); if(cpd) cpd.value='Annual CY';
-        capPopulateRange();
-        // Utilisation sub-tab also shares it.
-        utilExpanded={};
-        var uvb=document.getElementById('utilViewBy'); if(uvb) uvb.value='region';
-        var upd=document.getElementById('utilPeriod'); if(upd) upd.value='Annual CY';
-        utilPopulateRange();
+        // Reset clears the shared filters, but the view/period/range reset applies
+        // ONLY to the sub-tab you're on — the other sub-tabs keep their own settings.
+        if(prjSubtab==='capacity'){
+            capNetMode='gross'; capExpanded={};
+            var cvb=document.getElementById('capViewBy'); if(cvb) cvb.value='region';
+            var cpd=document.getElementById('capPeriod'); if(cpd) cpd.value='Annual CY';
+            capPopulateRange();
+        } else if(prjSubtab==='utilisation'){
+            utilExpanded={};
+            var uvb=document.getElementById('utilViewBy'); if(uvb) uvb.value='region';
+            var upd=document.getElementById('utilPeriod'); if(upd) upd.value='Annual CY';
+            utilPopulateRange();
+        } else if(prjSubtab==='projects'){
+            prjExpanded={};
+        } else {   // outlook (default)
+            prjNetMode='net';
+            var vb=document.getElementById('prjViewBy'); if(vb) vb.value='region';
+            var pd=document.getElementById('prjPeriod'); if(pd) pd.value='Annual CY';
+            prjOutlookPopulateRange();
+        }
         prjApplyFilters();
     } else if(scope==='capchart') { capChartApply(); }
     else if(scope==='utilchart') { utilChartApply(); }
@@ -4783,14 +4911,18 @@ function prjUpdateFilterUI(scope){
         for(var i=0;i<items.length;i++){
             var val=items[i].getAttribute('data-val');
             var cb=items[i].querySelector('input');
-            if(val==='__ALL__'){ if(cb) cb.checked=(prjFilters[scope][dim].length===0); items[i].classList.remove('ms-unavail'); continue; }
+            if(val==='__ALL__'){
+                var nSel=prjFilters[scope][dim].length, nAll=prjAllValues(dim).length;
+                if(cb){ cb.checked=(nSel===0 || nSel>=nAll); cb.indeterminate=(nSel>0 && nSel<nAll); }
+                items[i].classList.remove('ms-unavail'); continue;
+            }
             var checked=prjFilters[scope][dim].indexOf(val)>=0;
             if(cb) cb.checked=checked;
             var ok=(avail.indexOf(val)>=0 || checked) && (!q || val.toLowerCase().indexOf(q)>=0);
             items[i].classList.toggle('ms-unavail', !ok);
         }
         var btn=container.querySelector('.ms-button'); var sel=prjFilters[scope][dim];
-        btn.textContent = sel.length===0 ? 'All' : (sel.length<=2 ? sel.join(', ') : sel.length+' selected');
+        btn.textContent = (sel.length===0 || sel.length>=prjAllValues(dim).length) ? 'All' : (sel.length<=2 ? sel.join(', ') : sel.length+' selected');
         btn.title=sel.join(', ');
     });
 }
@@ -4934,6 +5066,7 @@ function prjSetSubtab(t){
     document.getElementById('prjPaneOutlook').classList.toggle('active', t==='outlook');
     document.getElementById('prjPaneCapacity').classList.toggle('active', t==='capacity');
     document.getElementById('prjPaneUtilisation').classList.toggle('active', t==='utilisation');
+    prjUpdateNetToggle();   // basis toggle only shows on the Supply Outlook sub-tab
     if(typeof scenUpdateBars==='function') scenUpdateBars();
     // Re-render charts when a pane becomes visible (they may have been drawn to a
     // hidden canvas during the last filter apply).
@@ -5032,17 +5165,18 @@ function prjOutlookRender(){
     var prod={}; view.rows.forEach(function(r){ prod[r.label]=r.base; });
     var leaves=prjFiltered().filter(function(p){ return prod[p.name]; });
     var net=prjNetActive('table'), netok=view.netok||[];
+    var ff=firstForecastIdx(view.col_meta, PRJ.latest_actual);
 
     var hHtml='<tr><th>Production'+(net?' — net':'')+' ('+ul+')<span class="unit-label"> ('+period+')</span></th>';
-    for(var i=0;i<vis.length;i++) hHtml+='<th>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
+    for(var i=0;i<vis.length;i++) hHtml+='<th'+fcAttr(vis[i],ff)+'>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
     document.getElementById('prjOutlookHead').innerHTML=hHtml+'</tr>';
 
     function cellsFn(names){
         var s='';
         for(var k=0;k<vis.length;k++){ var ci=vis[k];
-            if(net && !netok[ci]){ s+='<td></td>'; continue; }   // forward-looking only
+            if(net && !netok[ci]){ s+='<td'+fcAttr(ci,ff)+'></td>'; continue; }   // forward-looking only
             var sum=0; for(var n=0;n<names.length;n++){ var b=prod[names[n]]; if(b) sum+=b[ci]*prjStakeMul(names[n],'table'); }
-            s+='<td>'+formatNum(prjConvFlow(sum, view.days[ci]), false)+'</td>';
+            s+='<td'+fcAttr(ci,ff)+'>'+formatNum(prjConvFlow(sum, view.days[ci]), false)+'</td>';
         }
         return s;
     }
@@ -5080,8 +5214,9 @@ function prjChangeRender(){
     var prod={}; view.rows.forEach(function(r){ prod[r.label]=r.base; });
     var leaves=prjFiltered().filter(function(p){ return prod[p.name]; });
 
+    var ff=firstForecastIdx(view.col_meta, PRJ.latest_actual);
     var hHtml='<tr><th>Change<span class="unit-label"> ('+period+')</span></th>';
-    for(var i=0;i<vis.length;i++) hHtml+='<th>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
+    for(var i=0;i<vis.length;i++) hHtml+='<th'+fcAttr(vis[i],ff)+'>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
     document.getElementById('prjChangeHead').innerHTML=hHtml+'</tr>';
 
     var prevMode=growthMode; growthMode=prjChangeMode;   // computeGrowthCell + formatGrowth read this
@@ -5094,12 +5229,12 @@ function prjChangeRender(){
     }
     function cellsFn(names){
         var base=aggBase(names), s='';
-        for(var k=0;k<vis.length;k++){
-            if(net && !netok[vis[k]]){ s+='<td></td>'; continue; }
-            var gv=computeGrowthCell(base, view.days, view.col_meta, vis[k], period, gt, false);
-            if(gv===null){ s+='<td></td>'; continue; }
+        for(var k=0;k<vis.length;k++){ var ci=vis[k];
+            if(net && !netok[ci]){ s+='<td'+fcAttr(ci,ff)+'></td>'; continue; }
+            var gv=computeGrowthCell(base, view.days, view.col_meta, ci, period, gt, false);
+            if(gv===null){ s+='<td'+fcAttr(ci,ff)+'></td>'; continue; }
             var cls=gv>0.0001?'g-pos':(gv<-0.0001?'g-neg':'');
-            s+='<td'+(cls?' class="'+cls+'"':'')+'>'+formatGrowth(gv,false)+'</td>';
+            s+='<td'+fcAttr(ci,ff,cls)+'>'+formatGrowth(gv,false)+'</td>';
         }
         return s;
     }
@@ -5355,13 +5490,13 @@ function capSetLink(linked){
 function capToggleLink(){ capSetLink(!capChartLinked); }
 
 /* ---- Region/Country/Project tree (mirrors prjBuildTree; own expand state). ---- */
-function capCells(capmap, vis, scope){
+function capCells(capmap, vis, scope, ff){
     return function(names){
         var s='';
         for(var k=0;k<vis.length;k++){ var ci=vis[k];
             var sum=0; for(var nn=0;nn<names.length;nn++){ var b=capmap[names[nn]]; if(b) sum+=b[ci]*capStakeMul(names[nn],scope); }
             var v=prjConvCap(sum);
-            s+='<td>'+(v==null?'—':formatNum(v,false))+'</td>';
+            s+='<td'+fcAttr(ci,ff)+'>'+(v==null?'—':formatNum(v,false))+'</td>';
         }
         return s;
     };
@@ -5416,10 +5551,11 @@ function capRenderTables(){
         var vis=prjVisIndices(view, document.getElementById('capFrom'), document.getElementById('capTo'));
         var capmap={}; view.rows.forEach(function(r){ capmap[r.label]=r.base; });
         var leaves=prjFiltered().filter(function(p){ return capmap[p.name]; });
+        var ff=firstForecastIdx(view.col_meta, PRJ.latest_actual);
         var hHtml='<tr><th>'+m[3]+(net?' — net':'')+' ('+ul+')<span class="unit-label"> ('+period+')</span></th>';
-        for(var i=0;i<vis.length;i++) hHtml+='<th>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
+        for(var i=0;i<vis.length;i++) hHtml+='<th'+fcAttr(vis[i],ff)+'>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
         document.getElementById(m[1]).innerHTML=hHtml+'</tr>';
-        var body=capBuildTree(viewBy, leaves, capmap, vis, capCells(capmap, vis, 'table'));
+        var body=capBuildTree(viewBy, leaves, capmap, vis, capCells(capmap, vis, 'table', ff));
         if(!body) body='<tr><td colspan="'+(vis.length+1)+'" style="text-align:center;color:#9395A2;padding:20px;">No projects match the current filters.</td></tr>';
         document.getElementById(m[2]).innerHTML=body;
     });
@@ -5583,11 +5719,12 @@ function utilRenderTable(){
     var viewBy=document.getElementById('utilViewBy').value;
     var byName={}; view.rows.forEach(function(r){ byName[r.label]=r; });
     var leaves=utilInWindow(prjFiltered().filter(function(p){ return byName[p.name]; }), byName, vis);
+    var ff=firstForecastIdx(view.col_meta, PRJ.latest_actual);
     var hHtml='<tr><th>Utilisation<span class="unit-label"> ('+period+')</span></th>';
-    for(var i=0;i<vis.length;i++) hHtml+='<th>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
+    for(var i=0;i<vis.length;i++) hHtml+='<th'+fcAttr(vis[i],ff)+'>'+(view.short_columns[vis[i]]||view.columns[vis[i]])+'</th>';
     document.getElementById('utilHead').innerHTML=hHtml+'</tr>';
     function cellsFn(names){ var s='';
-        for(var k=0;k<vis.length;k++){ var v=utilWeighted(byName,names,vis[k]); s+='<td>'+(v==null?'—':Math.round(v*100)+'%')+'</td>'; }
+        for(var k=0;k<vis.length;k++){ var ci=vis[k]; var v=utilWeighted(byName,names,ci); s+='<td'+fcAttr(ci,ff)+'>'+(v==null?'—':Math.round(v*100)+'%')+'</td>'; }
         return s; }
     var body=utilBuildTree(viewBy, leaves, byName, vis, cellsFn);
     if(!body) body='<tr><td colspan="'+(vis.length+1)+'" style="text-align:center;color:#9395A2;padding:20px;">No projects match the current filters.</td></tr>';
@@ -5974,14 +6111,16 @@ function scenConfirmReset(){
 
 /* ---- UI: edit mode, global utilisation-sensitivity control, status bar ---- */
 function scenToggleEdit(){
-    if(scenEditMode) return;          // adjust mode stays ON once entered; only Reset turns it off
-    scenEditMode=true;
-    if(scenAnyEdits()) scenMode='scenario';
-    // Per-project editing lives on the Projects tab — jump there from Supply Outlook
-    // / Capacity / Utilisation. (Overview keeps its own Adjust for upcoming imports.)
-    if(currentKey==='lng_projects' && prjSubtab!=='projects'){ lngSetSubtab('projects'); }
-    scenApplyMode();                  // refreshes the bar (button label, slider, status, hint)
-    if(currentKey==='lng_projects' && prjSubtab==='projects') prjRenderTree();
+    // The button is the single control: ON = adjusting + viewing your changes;
+    // clicking it again turns OFF and reverts the view to the original model.
+    // Edits are kept (so toggling compares original vs changes); Reset model clears them.
+    if(scenEditMode){
+        scenEditMode=false; scenMode='original';
+        scenApplyMode(); scenRerender();   // views -> pristine, tree drops inline editors, bar refreshes
+        return;
+    }
+    scenEditMode=true; scenMode='scenario';
+    scenApplyMode(); scenRerender();       // show the scenario; per-project editing happens on the Projects tab
 }
 function scenSetSens(pts){
     var v = Math.max(-100, Math.min(100, parseFloat(pts)||0));
@@ -6048,11 +6187,18 @@ function scenUpdateBars(){
     var onLng = (currentKey==='lng_projects' || currentKey==='global_lng');
     bar.style.display = onLng ? 'flex' : 'none';
     if(!onLng) return;
+    var onProjects = (currentKey==='lng_projects' && prjSubtab==='projects');
     var changed = scenAnyEdits();
     var ab=document.getElementById('scenAdjustBtn');
-    if(ab){ ab.classList.toggle('active', scenEditMode); ab.textContent = scenEditMode ? '✓ Adjust mode on' : 'Adjust assumptions'; }
-    var ac=document.getElementById('scenAdjustControls'); if(ac) ac.style.display = scenEditMode ? 'flex' : 'none';
-    var hint=document.getElementById('scenAdjustHint'); if(hint) hint.style.display = (scenEditMode && currentKey==='lng_projects' && prjSubtab==='projects') ? 'inline-block' : 'none';
+    if(ab){ ab.classList.toggle('active', scenEditMode);
+        ab.textContent = scenEditMode ? '✓ Adjusting — click to view original' : 'Adjust assumptions';
+        ab.title = scenEditMode ? 'Click to turn off and view the original model (your changes are kept; use Reset model to clear them)' : 'Turn on to build a what-if scenario'; }
+    // Global utilisation slider + How-to help live on the Projects tab only; other
+    // tabs get a note pointing the user there for per-project edits.
+    var ac=document.getElementById('scenAdjustControls'); if(ac) ac.style.display = (scenEditMode && onProjects) ? 'flex' : 'none';
+    var goto=document.getElementById('scenGotoNote'); if(goto) goto.style.display = (scenEditMode && !onProjects) ? 'inline-flex' : 'none';
+    var howto=document.getElementById('scenHowTo'); if(howto) howto.style.display = (scenEditMode && onProjects) ? 'inline-flex' : 'none';
+    var hint=document.getElementById('scenAdjustHint'); if(hint) hint.style.display='none';   // superseded by the How-to button
     var st=document.getElementById('scenStatus'); if(st) st.style.display = changed ? 'flex' : 'none';
     bar.classList.toggle('scen-clean', !(changed && scenMode==='scenario'));
     if(changed){
@@ -6060,13 +6206,10 @@ function scenUpdateBars(){
         var lbl=document.getElementById('scenBarLabel');
         if(lbl) lbl.innerHTML = (scenMode==='scenario')
             ? ('● Scenario active — '+n+' change'+(n===1?'':'s'))
-            : 'Viewing the original model';
-        var cb=document.getElementById('scenViewChg'), ob=document.getElementById('scenViewOrig');
-        if(cb) cb.classList.toggle('active', scenMode==='scenario');
-        if(ob) ob.classList.toggle('active', scenMode==='original');
+            : ('Original shown — '+n+' change'+(n===1?'':'s')+' hidden (click Adjust to view)');
         var pop=document.getElementById('scenChangesPop'); if(pop) pop.innerHTML=scenChangesSummary();
         var rb=document.getElementById('scenResetBtn');
-        if(rb) rb.style.display = (currentKey==='lng_projects' && prjSubtab==='projects') ? 'inline-block' : 'none';
+        if(rb) rb.style.display = onProjects ? 'inline-block' : 'none';
     }
     var sl=document.getElementById('scenUtilSensSlider'), nu=document.getElementById('scenUtilSensNum'), pts=Math.round(scenUtilSens*100);
     if(sl && parseFloat(sl.value)!==pts) sl.value=pts;
@@ -6217,6 +6360,18 @@ document.addEventListener('DOMContentLoaded', function() {
     # scenario indicator + Original<->Changes toggle + Reset (when changes exist).
     html += '<div class="scen-bar" id="scenBar" style="display:none;">\n'
     html += '    <button class="scen-adjust-btn" id="scenAdjustBtn" onclick="scenToggleEdit()">Adjust assumptions</button>\n'
+    # Shown when adjusting from any tab other than Projects — points the user there.
+    html += '    <span class="scen-goto-note" id="scenGotoNote" style="display:none;">Go to the <button type="button" class="scen-goto-link" onclick="lngSetSubtab(\'projects\')">LNG Projects tab</button> to make adjustments.</span>\n'
+    # How-to hover help, shown on the Projects tab while adjusting.
+    html += '    <span class="scen-howto" id="scenHowTo" style="display:none;" tabindex="0">\n'
+    html += '      <span class="scen-howto-btn">How to adjust ⓘ</span>\n'
+    html += '      <span class="scen-howto-pop">\n'
+    html += '        <b>Making adjustments</b><br>\n'
+    html += '        Click any project row in the table below to expand it, then edit its <b>Chance of success</b>, <b>Start date</b> or <b>Utilisation decline</b>. Every change recomputes the whole supply view instantly.<br><br>\n'
+    html += '        Use the <b>Utilisation sensitivity</b> slider for an across-the-board shift on all projects.<br><br>\n'
+    html += '        Nothing is saved — turn the button off to view the original, or <b>Reset model</b> to clear all changes.\n'
+    html += '      </span>\n'
+    html += '    </span>\n'
     html += '    <div class="scen-adjust-controls" id="scenAdjustControls" style="display:none;">\n'
     html += '      <div class="scen-sens">\n'
     html += '        <label>Utilisation sensitivity (forecast, all projects)</label>\n'
@@ -6231,11 +6386,6 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '      <div class="scen-pill" id="scenPill" tabindex="0">\n'
     html += '        <span class="scen-bar-label" id="scenBarLabel"></span>\n'
     html += '        <div class="scen-changes-pop" id="scenChangesPop"></div>\n'
-    html += '      </div>\n'
-    html += '      <div class="scen-view-toggle">\n'
-    html += '        <span class="scen-view-cap">Showing</span>\n'
-    html += '        <button id="scenViewChg" class="active" onclick="scenSetMode(\'scenario\')">Your changes</button>\n'
-    html += '        <button id="scenViewOrig" onclick="scenSetMode(\'original\')">Original</button>\n'
     html += '      </div>\n'
     html += '      <button class="scen-reset-btn" id="scenResetBtn" onclick="scenResetAll()">Reset model</button>\n'
     html += '    </div>\n'
@@ -6500,6 +6650,16 @@ document.addEventListener('DOMContentLoaded', function() {
                      ("Country", "prjFilterCountry"), ("Company", "prjFilterCompany"),
                      ("Project", "prjFilterProject")]:
         html += f'    <div class="prj-filter-group"><label>{lbl}</label><div class="multi-select" id="{fid}"></div></div>\n'
+        if fid == "prjFilterCompany":
+            # Gross/Net basis toggle sits right next to Company (Supply Outlook only;
+            # net = gross x the selected companies' stake). Default Net.
+            html += '    <div class="prj-filter-group prj-net-group" id="prjNetToggle" style="display:none;" title="Net is forward-looking only — gross &times; selected companies&rsquo; stake.">\n'
+            html += '      <label>Basis</label>\n'
+            html += '      <div class="growth-toggle">\n'
+            html += '        <button id="prjGrossBtn" onclick="prjSetNetMode(\'gross\')">Gross</button>\n'
+            html += '        <button id="prjNetBtn" class="active" onclick="prjSetNetMode(\'net\')">Net</button>\n'
+            html += '      </div>\n'
+            html += '    </div>\n'
     html += '    <button class="prj-filter-reset" onclick="prjResetFilters(\'table\')">Reset filters</button>\n'
     html += '  </div>\n'
     # Supply Outlook pane (default) — production table by region/country/project
@@ -6524,17 +6684,6 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '      </div>\n'
     html += '      <div class="control-group"><label>From</label><select id="prjFrom" onchange="prjOutlookRender()"></select></div>\n'
     html += '      <div class="control-group"><label>To</label><select id="prjTo" onchange="prjOutlookRender()"></select></div>\n'
-    # Gross/Net (stake-weighted) toggle — shown only while >=1 company is selected.
-    html += '      <div class="control-group prj-net-group" id="prjNetToggle" style="display:none;">\n'
-    html += '        <label>Basis</label>\n'
-    html += '        <div class="net-toggle-row">\n'
-    html += '          <div class="growth-toggle">\n'
-    html += '            <button id="prjGrossBtn" class="active" onclick="prjSetNetMode(\'gross\')">Gross</button>\n'
-    html += '            <button id="prjNetBtn" onclick="prjSetNetMode(\'net\')">Net</button>\n'
-    html += '          </div>\n'
-    html += '          <span class="prj-net-note" id="prjNetNote" style="display:none;">Net is forward-looking only — gross &times; selected companies&rsquo; stake.</span>\n'
-    html += '        </div>\n'
-    html += '      </div>\n'
     html += '    </div>\n'
     html += '    <div class="prj-table-container">\n'
     html += '      <table class="prj-table prj-outlook-table"><thead id="prjOutlookHead"></thead><tbody id="prjOutlookBody"></tbody></table>\n'
@@ -6588,9 +6737,8 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '      </div>\n'
     html += '    </div>\n'
     html += '  </div>\n'
-    # Projects pane (assumptions). Adjust controls now live on the scenario bar.
+    # Projects pane (assumptions). Adjust controls + How-to live on the scenario bar.
     html += '  <div class="prj-pane" id="prjPaneProjects">\n'
-    html += '    <span class="scen-adjust-hint" id="scenAdjustHint" style="display:none;">Adjust mode on — expand a project to edit its Chance of success, Start date or Utilisation decline.</span>\n'
     html += '    <div class="prj-table-container">\n'
     html += '      <table class="prj-table"><thead id="prjTableHead"></thead><tbody id="prjTableBody"></tbody></table>\n'
     html += '    </div>\n'
