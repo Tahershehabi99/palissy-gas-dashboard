@@ -106,6 +106,32 @@ def snapshot():
         wb.close()
 
 
+COORDS = ROOT / "src" / "lng_project_coords.csv"   # Map tab sidecar (see ADR-021)
+
+
+def coords_check(snap):
+    """Map tab: name projects that have no coordinates in src/lng_project_coords.csv.
+    Informational only (never blocks): unmapped projects still appear on every other
+    tab, they are just not plotted on the Global LNG map."""
+    import csv
+    if not COORDS.exists():
+        print(f"   ! MAP: src/{COORDS.name} not found - nothing will be plotted on the Map tab")
+        return
+    have = set()
+    with open(COORDS, encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            try:
+                float(row.get("lat")); float(row.get("lon"))
+                have.add((row.get("project") or "").strip())
+            except (TypeError, ValueError):
+                pass
+    missing = sorted(set(snap["projects"]) - have)
+    if missing:
+        print(f"   ! MAP: {len(missing)} project(s) have no coordinates in src/{COORDS.name} "
+              f"(on every tab, but NOT on the map): {', '.join(missing)}")
+        print("     -> add a row per project (project,lat,lon,note) or ask Claude to geocode them.")
+
+
 def main():
     write = "--write" in sys.argv
     try:
@@ -122,6 +148,7 @@ def main():
         print(f"[PREFLIGHT] manifest {'initialised' if first else 'rewritten'}: "
               f"{len(snap['projects'])} projects, {len(snap['countries'])} countries, "
               f"{len(snap['regions'])} regions")
+        coords_check(snap)
         return 0
 
     old = json.loads(MANIFEST.read_text())
@@ -170,6 +197,7 @@ def main():
     if old.get("projects") and not any("assumptions" in old["projects"][p] for p in on & nn):
         print("   (note: previous manifest had no assumptions fingerprint — assumption "
               "changes will be reported from the NEXT update onward.)")
+    coords_check(snap)   # Map tab: new projects need a lat/lon row (informational)
 
     if removed or new_regions or new_countries:
         print("STOP - structural change needs review (removed/renamed project or new "

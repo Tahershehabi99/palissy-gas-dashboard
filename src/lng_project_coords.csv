@@ -1,0 +1,158 @@
+project,lat,lon,note
+Angola LNG,-6.130,12.370,Soyo
+Arzew,35.830,-0.300,
+Skikda,36.880,6.930,
+Bahia Blanca LNG,-38.750,-62.270,Tango FLNG (Bahia Blanca)
+ARGLNG 1 - Hilli,-41.000,-64.500,Gulf of San Matias (Rio Negro) - approximate
+ARGLNG 1 - MK 2,-41.000,-64.500,Gulf of San Matias (Rio Negro) - approximate
+ARGLNG 2,-41.000,-64.500,Gulf of San Matias (Rio Negro) - approximate
+ARGLNG 3 - Vessel 1,-41.000,-64.500,Gulf of San Matias (Rio Negro) - approximate
+ARGLNG 3 - Vessel 2,-41.000,-64.500,Gulf of San Matias (Rio Negro) - approximate
+LNG del Plata,-34.900,-57.900,Rio de la Plata - approximate; verify
+Darwin,-12.500,130.870,Wickham Point
+Prelude FLNG,-13.830,123.300,Browse Basin
+NWS LNG,-20.630,116.750,Karratha (Burrup)
+Gorgon LNG,-20.780,115.450,Barrow Island
+Wheatstone LNG,-21.680,115.030,Onslow
+Gladstone,-23.780,151.220,Curtis Island (QCLNG/GLNG/APLNG)
+Browse FLNG,-13.900,122.500,Browse Basin - approximate
+Pluto LNG T2,-20.620,116.770,Burrup
+Darwin LNG T2,-12.500,130.870,Wickham Point
+NTLNG,-12.530,130.900,Middle Arm (Darwin) - approximate
+Brunei LNG,4.650,114.470,Lumut
+Cameroon FLNG,2.950,9.850,Kribi (Hilli Episeyo)
+Etinde FLNG,3.950,9.150,offshore Limbe - approximate
+Cedar FLNG,53.990,-128.680,Kitimat
+Ksi Lisims FLNG,54.830,-130.350,Pearse Island
+Tilbury Island LNG T1,49.150,-123.030,Delta BC
+Tilbury Island LNG T2,49.150,-123.030,Delta BC
+LNG Canada,54.020,-128.680,Kitimat
+LNG Canada Ph2,54.020,-128.680,Kitimat
+Woodfibre LNG,49.670,-123.250,Squamish
+Fermeuse LNG,46.970,-52.950,Newfoundland
+Kanata LNG,54.300,-130.300,Prince Rupert area - unconfirmed; verify
+Congo FLNG,-5.100,11.600,Marine XII (offshore Pointe-Noire)
+Congo FLNG Ph2,-5.100,11.600,Marine XII (offshore Pointe-Noire)
+Idku LNG,31.300,30.250,
+Damietta SEGAS LNG,31.470,31.750,
+EG LNG,3.750,8.720,Punta Europa (Bioko)
+Malaysia LNG,3.250,113.050,Bintulu
+Kota Kinabalu,6.000,115.500,offshore Sabah (PFLNG) - approximate
+ZLNG FLNG,5.000,115.600,Sipitang (Sabah) - approximate
+Greater Tortue Ahmeyim FLNG,16.350,-16.850,
+Greater Tortue Ahmeyim FLNG - Ph2,16.350,-16.850,
+Altamira FLNG Ph 1,22.500,-97.850,
+Altamira FLNG Ph 2,22.500,-97.850,
+Mexico Pacific LNG,29.900,-112.700,Puerto Libertad (Sonora)
+AMIGO LNG,25.600,-109.050,Topolobampo
+Vista Pacifico LNG,25.600,-109.050,Topolobampo
+Liberty Bay FLNG,31.850,-116.600,Baja California - unconfirmed; verify
+Costa Azul Export,31.980,-116.860,Ensenada
+Coral Sul FLNG,-11.000,41.200,Rovuma offshore
+Coral Norte FLNG,-11.000,41.200,Rovuma offshore
+Coral Norte FLNG 2.0,-11.000,41.200,Rovuma offshore
+Rovuma LNG,-10.750,40.550,Afungi
+Rovuma LNG (3rd Vessel),-10.750,40.550,Afungi
+Mozambique LNG Ph. I,-10.770,40.530,Afungi
+Tangguh,-2.450,133.150,Bintuni Bay
+Bontang,-0.100,117.480,
+Donggi-Senoro LNG,-0.950,122.850,Luwuk
+Abadi FLNG,-7.600,131.400,Masela / Tanimbar - approximate
+Genting FLNG,-2.300,133.400,Kasuri block (West Papua) - approximate
+NewMed FLNG,33.000,34.400,Leviathan offshore
+Bonny Island,4.420,7.170,
+UTM Offshore FLNG,4.000,7.900,Yoho field offshore - approximate
+Nigeria LNG Expansion T7,4.420,7.170,Bonny Island
+Snohvit LNG,70.680,23.600,Melkoya (Hammerfest)
+Risavika,58.920,5.620,
+Oman LNG,22.630,59.450,Qalhat (Sur)
+Sur LNG (Omar LNG T4),22.630,59.450,Qalhat (Sur)
+Sohar LNG (Marsa LNG),24.470,56.620,Sohar
+PNG LNG,-9.330,147.020,Caution Bay
+PNG LNG Expansion,-9.330,147.020,Caution Bay
+Papua LNG,-9.330,147.020,Caution Bay
+Pampa Melchorita LNG,-13.280,-76.250,
+Ras Laffan,25.920,51.550,
+North Field East (NFE) T1,25.920,51.550,Ras Laffan
+North Field East (NFE) T2,25.920,51.550,Ras Laffan
+North Field East (NFE) T3,25.920,51.550,Ras Laffan
+North Field East (NFE) T4,25.920,51.550,Ras Laffan
+North Field South (NFS) T1,25.920,51.550,Ras Laffan
+North Field South (NFS) T2,25.920,51.550,Ras Laffan
+North Field West (NFW) T1,25.920,51.550,Ras Laffan
+North Field West (NFW) T2,25.920,51.550,Ras Laffan
+Yamal LNG,71.270,72.070,Sabetta
+Sakhalin-2 LNG,46.620,142.900,Prigorodnoye
+Portovaya LNG,60.550,28.620,
+Vysotsk,60.620,28.570,
+Arctic LNG 2 T1-2,71.150,73.500,Utrenniy (Gydan)
+Arctic LNG 2 T3,71.150,73.500,Utrenniy (Gydan)
+Arctic LNG 1 T1-3,71.300,74.500,Gydan - approximate
+Ust Luga LNG T1,59.680,28.400,
+Ust Luga LNG T2,59.680,28.400,
+Suriname FLNG,6.600,-55.500,offshore Block 58 - approximate
+Tanzania LNG,-10.000,39.720,Lindi
+East Timor,-8.850,126.350,Beaco (south coast)
+Atlantic LNG,10.170,-61.680,Point Fortin
+Das Island,25.150,52.870,
+Ruwais LNG,24.120,52.730,
+Sabine Pass LNG,29.750,-93.870,
+Freeport LNG,28.940,-95.310,
+Corpus Christi LNG,27.870,-97.280,Gregory
+Cameron LNG,30.050,-93.320,Hackberry
+Cove Point LNG,38.390,-76.410,
+Elba Island LNG,32.080,-81.000,
+Calcasieu Pass LNG,29.770,-93.340,
+Plaquemines LNG,29.520,-89.850,Port Sulphur
+Plaquemines Bolt-on,29.520,-89.850,Port Sulphur
+Plaquemines Expansion Ph 1,29.520,-89.850,Port Sulphur
+Plaquemines Expansion Ph 2,29.520,-89.850,Port Sulphur
+Plaquemines Expansion Ph 3,29.520,-89.850,Port Sulphur
+Golden Pass LNG T1,29.760,-93.930,Sabine Pass TX
+Golden Pass LNG T2,29.760,-93.930,Sabine Pass TX
+Golden Pass LNG T3,29.760,-93.930,Sabine Pass TX
+Corpus Christi LNG Stage 3 T5-7,27.870,-97.280,Gregory
+Corpus Christi LNG Stage 3 T8-9,27.870,-97.280,Gregory
+Corpus Christi LNG Stage 4 Ph. I,27.870,-97.280,Gregory
+Corpus Christi LNG Stage 4 Ph. II,27.870,-97.280,Gregory
+Lantern LNG T1,29.800,-93.500,Cameron Parish LA - unconfirmed; verify
+Lantern LNG T2-3,29.800,-93.500,Cameron Parish LA - unconfirmed; verify
+Alaska LNG,60.680,-151.350,Nikiski
+Cameron LNG Expansion,30.050,-93.320,Hackberry
+Commonwealth LNG T1-2,29.770,-93.330,Cameron LA
+Commonwealth LNG T3-6,29.770,-93.330,Cameron LA
+Commonwealth LNG T7-T11,29.770,-93.330,Cameron LA
+CP2 LNG Ph. I,29.800,-93.380,Cameron Parish LA
+CP2 LNG Ph. II,29.800,-93.380,Cameron Parish LA
+CP2 LNG Bolt-on,29.800,-93.380,Cameron Parish LA
+CP3 LNG Ph 1,29.820,-93.400,Cameron Parish LA - approximate; verify
+CP3 LNG Ph 2,29.820,-93.400,Cameron Parish LA - approximate; verify
+Delfin FLNG - T1,28.050,-93.200,offshore Cameron
+Delfin FLNG - T2,28.050,-93.200,offshore Cameron
+Delfin FLNG - T3,28.050,-93.200,offshore Cameron
+Freeport LNG Expansion,28.940,-95.310,
+Magnolia LNG,30.150,-93.280,Lake Charles
+Port Arthur LNG Ph. I,29.810,-93.930,
+Port Arthur LNG Ph. II,29.810,-93.930,
+Qilak LNG,70.200,-146.300,North Slope (Point Thomson) - approximate
+Rio Grande LNG Ph. I,25.950,-97.300,Brownsville
+Rio Grande LNG Ph. II,25.950,-97.300,Brownsville
+Rio Grande LNG Ph. II (T5),25.950,-97.300,Brownsville
+Rio Grande LNG Ph. III,25.950,-97.300,Brownsville
+Sabine Pass LNG T7,29.750,-93.870,
+Sabine Pass LNG T8-T9,29.750,-93.870,
+Texas LNG,25.970,-97.280,Brownsville
+Lake Charles,30.190,-93.290,
+Argent LNG Ph 1,29.110,-90.200,Port Fourchon LA
+Argent LNG Ph 2,29.110,-90.200,Port Fourchon LA
+Costal Blend LNG,27.900,-97.200,Corpus Christi area - approximate; verify
+Gulfstream LNG,29.620,-89.950,Plaquemines Parish (Myrtle Grove)
+Woodside Louisiana LNG,30.140,-93.350,Carlyss (Calcasieu Parish)
+Eddystone LNG,39.860,-75.330,Eddystone PA - unconfirmed; verify
+Monkey LNG,29.780,-93.350,Monkey Island (Cameron LA)
+ST LNG Ph 1,29.380,-94.900,Texas Gulf Coast - unconfirmed; verify
+ST LNG Ph 2,29.380,-94.900,Texas Gulf Coast - unconfirmed; verify
+ST LNG Ph 3,29.380,-94.900,Texas Gulf Coast - unconfirmed; verify
+ST LNG Ph 4,29.380,-94.900,Texas Gulf Coast - unconfirmed; verify
+Polar LNG,60.700,-151.400,Alaska (Cook Inlet) - unconfirmed; verify
+Perla LNG,12.100,-70.500,Cardon IV offshore Paraguana

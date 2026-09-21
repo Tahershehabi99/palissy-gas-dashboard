@@ -32,10 +32,19 @@ PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 # INPUT/, which holds only the user's pasted master + archive).
 INPUT_FILE = os.path.join(PROJECT_DIR, "WORKING", "gas_model_input.xlsx")
 LNG_INPUT_FILE = os.path.join(PROJECT_DIR, "WORKING", "lng_model_input.xlsx")
+# Gas/Power actual-vs-forecast boundary, maintained by INPUT/update_gas.bat
+# (src/set_gas_actual.py). Overrides the "actual_end" defaults in DATASETS when
+# present, so the user never has to edit this file after a data update.
+GAS_SETTINGS_FILE = os.path.join(PROJECT_DIR, "WORKING", "gas_settings.json")
 OUTPUT_DIR = os.path.join(PROJECT_DIR, "output")
 OUTPUT_FILE = os.path.join(OUTPUT_DIR, "index.html")
 LOGO_FILE = os.path.join(PROJECT_DIR, "Context", "Palissy Logo.png")
 FONT_FILE = os.path.join(PROJECT_DIR, "Context", "Gotham-Book.otf")
+# Project coordinates for the Map tab (Global LNG). A committed sidecar keyed by
+# project NAME (the master has no lat/lon). Projects missing here still exist on
+# every other tab; they are simply not plotted (the map shows an "unmapped" count
+# and preflight_lng.py names them). Columns: project, lat, lon, note.
+COORDS_FILE = os.path.join(SCRIPT_DIR, "lng_project_coords.csv")
 
 # Palissy brand colors
 COLORS = {
@@ -269,7 +278,8 @@ DATASETS = [
         "stock_rows": ["Opening Storage", "Closing Storage", "Storage percentage"],
         "pct_rows": ["Storage percentage"],
         # Last actual month (year, month); later periods are forecast. Gas/power
-        # come from a separate model with no in-data boundary marker, so set it here.
+        # come from a separate model with no in-data boundary marker. This is the
+        # DEFAULT only - WORKING/gas_settings.json (set by update_gas.bat) wins.
         "actual_end": (2026, 5),
         "use_hierarchy": True,
         "skip_label_rows": [],
@@ -385,6 +395,36 @@ EMBED_TABS = [
      "url": "https://tahershehabi99.github.io/eu-gas-dashboard/lng.html?embedded=1"},
 ]
 
+# ============================================================
+# MAP TAB
+# A top-level "Map" tab with two sub-views: the Global LNG project map (Leaflet
+# dots from the lng_projects blob + src/lng_project_coords.csv) and a European
+# gas balance map placeholder ("coming soon"). Not a dataset: it reads
+# ALL_DATASETS.lng_projects directly (so it is scenario-aware) and is shown via
+# body.map-active, the same way the embed tabs are. See ADR-021.
+# ============================================================
+MAP_TAB = {"key": "map", "label": "Map"}
+# Leaflet + marker clustering (CDN, like Chart.js) and the free CARTO light basemap.
+LEAFLET_CSS = "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
+LEAFLET_JS = "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
+MARKERCLUSTER_CSS = "https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"
+MARKERCLUSTER_JS = "https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"
+# Basemap = our OWN vector world, embedded in the page: Natural Earth 50m country
+# outlines (public domain), simplified to ~0.02 deg and stored as compact GeoJSON
+# in src/world_countries.json (~800 KB). No tile server, no API key, works from
+# file:// and inside the Wix iframe, and it is styled to match the dashboard.
+# (CARTO's free tiles started returning "API key required" - see ADR-021.)
+WORLD_FILE = os.path.join(SCRIPT_DIR, "world_countries.json")
+MAP_ATTRIB = 'Basemap: <a href="https://www.naturalearthdata.com/">Natural Earth</a>'
+# Dot colours by project status (user spec: pre-FID green, under construction
+# blue, producing yellow; shut-down / unclassified grey).
+MAP_STATUS_COLORS = {
+    "Producing": "#E5B83A",
+    "Under construction": "#258EEB",
+    "Pre-FID": "#539648",
+    "Shut-down": "#9395A2",
+}
+
 
 # ============================================================
 # DATA LOADING
@@ -459,6 +499,23 @@ def read_dataset(wb, config):
             pass
         rows.append({"label": label_str, "values": values})
         r += 1
+
+    # Per-row actual/forecast boundary (from the master's cell colours), written by
+    # extract_gas_input.py to a 'Boundaries' sheet: Sheet | Row | 'YYYY-MM'. Rows
+    # without an entry fall back to the dataset-level actual_end.
+    if "Boundaries" in wb.sheetnames:
+        bounds = {}
+        for sh, lab, ym in wb["Boundaries"].iter_rows(min_row=2, max_col=3, values_only=True):
+            if sh == sheet_name and lab and ym:
+                y, m = (int(x) for x in str(ym).split("-")[:2])
+                bounds[str(lab).strip()] = {"year": y, "month": m}
+        n = 0
+        for row in rows:
+            if row["label"] in bounds:
+                row["la"] = bounds[row["label"]]
+                n += 1
+        if n:
+            print(f"  Per-row actual/forecast boundaries: {n} of {len(rows)} rows")
 
     print(f"  Loaded {len(rows)} rows x {len(dates)} months ({dates[0].strftime('%b %Y')} - {dates[-1].strftime('%b %Y')})")
     return dates, days_per_month, rows
@@ -717,6 +774,9 @@ def build_dataset_blob(config):
     period_results = aggregate_monthly_to_periods(dates, days)
     print(f"  Periods: " + ", ".join(f"{k}={len(v)}" for k, v in period_results.items()))
 
+    # Per-row boundary (only rows that have one) - the JS shades each row from its own
+    # month; rows without one use the dataset-level latest_actual.
+    la_by_label = {r["label"]: r["la"] for r in rows if r.get("la")}
     views = {}
     for view_name, period_cols in period_results.items():
         aggregated = compute_period_values(rows, period_cols, config["stock_rows"], config["pct_rows"])
@@ -733,7 +793,9 @@ def build_dataset_blob(config):
             "short_columns": [c["short"] for c in period_cols],
             "col_meta": col_meta,
             "days": days_array,
-            "rows": [{"label": a["label"], "base": a["base_values"]} for a in aggregated],
+            "rows": [dict({"label": a["label"], "base": a["base_values"]},
+                          **({"la": la_by_label[a["label"]]} if a["label"] in la_by_label else {}))
+                     for a in aggregated],
         }
 
     ui_hierarchy = []
@@ -782,6 +844,9 @@ def build_dataset_blob(config):
         # Actual/forecast boundary (year, month) -> {year, month}; None if unset.
         "latest_actual": ({"year": config["actual_end"][0], "month": config["actual_end"][1]}
                           if config.get("actual_end") else None),
+        # True when some rows carry their own (different) boundary -> the note says so.
+        "row_la_varies": bool(config.get("actual_end")) and any(
+            (la["year"], la["month"]) != tuple(config["actual_end"]) for la in la_by_label.values()),
         # LNG composite metadata (ignored by gas/power).
         "range_kind": config.get("range_kind"),
         "chart_series": config.get("chart_series"),
@@ -805,6 +870,27 @@ HC_REASONS = {
     "Plaquemines LNG": "Set to the company’s production guidance.",
 }
 HC_REASON_GENERIC = "Fixed by Palissy Advisers based on market intelligence."
+
+
+def load_project_coords():
+    """Read src/lng_project_coords.csv -> {project name: {lat, lon, note}}.
+    Missing file = no coordinates (the map then plots nothing but still works)."""
+    import csv
+    out = {}
+    if not os.path.exists(COORDS_FILE):
+        print(f"  WARNING: {COORDS_FILE} not found - Map tab will have no project dots")
+        return out
+    with open(COORDS_FILE, encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            name = (row.get("project") or "").strip()
+            try:
+                lat, lon = float(row.get("lat")), float(row.get("lon"))
+            except (TypeError, ValueError):
+                continue
+            if name and -90 <= lat <= 90 and -180 <= lon <= 180:
+                out[name] = {"lat": lat, "lon": lon, "note": (row.get("note") or "").strip()}
+    print(f"  Coordinates loaded: {len(out)} projects from {os.path.basename(COORDS_FILE)}")
+    return out
 
 
 def build_projects_blob(config):
@@ -891,6 +977,22 @@ def build_projects_blob(config):
             p["decline_start_idx"] = ym_to_idx.get((int(m.group(1)), int(m.group(2))), -1) if m else -1
     finally:
         wb.close()
+
+    # Map coordinates (sidecar CSV keyed by project name). Unmapped projects get
+    # lat/lon = None and are reported here + by preflight_lng.py.
+    coords = load_project_coords()
+    unmapped = []
+    for p in projects:
+        c = coords.get(p["name"])
+        if c:
+            p["lat"], p["lon"], p["loc_note"] = c["lat"], c["lon"], c["note"]
+        else:
+            p["lat"], p["lon"], p["loc_note"] = None, None, ""
+            unmapped.append(p["name"])
+    if unmapped:
+        print(f"  WARNING: {len(unmapped)} project(s) have no coordinates in "
+              f"{os.path.basename(COORDS_FILE)} (not plotted on the Map tab): "
+              f"{', '.join(unmapped)}")
 
     region_order = ["Asia", "Australia", "LatAm", "MENA and Europe",
                     "North America", "Russia", "Sub-Saharan Africa"]
@@ -2198,6 +2300,139 @@ table.util-heatmap th.util-hm-corner { position: sticky; left: 0; z-index: 3; }
 .prj-badge.s-pre-fid            { background: #E5EAF5; color: #272962; }
 .prj-badge.s-shut-down          { background: #F2DADA; color: #C00000; }
 
+/* ============================================================
+   MAP TAB (Global LNG project map + European gas balance placeholder)
+   Shown via body.map-active (+ body.map-lng / body.map-eu for the sub-view).
+   ============================================================ */
+.map-subtab-bar { display: none; justify-content: center; gap: 0; margin: 4px 20px 14px; }
+body.map-active .map-subtab-bar { display: flex; }
+.map-wrap { display: none; margin: 0 20px 12px; }
+body.map-active .map-wrap { display: block; }
+body.map-active .controls, body.map-active .period-note, body.map-active .main-grid,
+body.map-active .lng-grid, body.map-active .embed-container, body.map-active .projects-tab-wrap,
+body.map-active .lng-subtab-bar { display: none; }
+body.map-active .scen-bar, body.embed-active .scen-bar { display: none !important; }
+.map-pane { display: none; }
+body.map-lng #mapPaneLng { display: block; }
+body.map-eu #mapPaneEu { display: block; }
+
+.map-options-row {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 18px;
+    margin: 0 0 10px; padding: 0 4px; font-size: 12px; color: """ + db + """;
+}
+.map-check { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+.map-check input { accent-color: """ + db + """; width: 14px; height: 14px; cursor: pointer; }
+.map-timeline { display: flex; align-items: center; gap: 10px; }
+.map-timeline input[type="range"] { width: 240px; accent-color: """ + db + """; }
+.map-timeline .map-year { font-weight: bold; min-width: 38px; font-variant-numeric: tabular-nums; }
+.map-timeline .growth-toggle { margin-left: 4px; }
+.map-count { margin-left: auto; color: """ + grey + """; font-size: 11.5px; }
+
+.map-canvas-wrap {
+    position: relative; height: calc(100vh - 330px); min-height: 520px;
+    border: 1px solid """ + border + """; border-radius: 12px; overflow: hidden;
+    background: #eef0f5;
+}
+#lngMapCanvas { width: 100%; height: 100%; background: #e6edf4; }   /* ocean */
+.leaflet-container { font-family: 'Gotham Book', 'Segoe UI', Calibri, sans-serif; }
+.leaflet-container .leaflet-control-attribution { font-size: 9.5px; color: """ + grey + """; background: rgba(255,255,255,0.7); }
+.leaflet-tooltip.map-country-tip {
+    font-family: 'Gotham Book', 'Segoe UI', Calibri, sans-serif; font-size: 10.5px; color: """ + grey + """;
+    background: rgba(255,255,255,0.9); border: 1px solid rgba(39,41,98,0.18); border-radius: 6px;
+    box-shadow: none; padding: 2px 7px;
+}
+.leaflet-tooltip.map-country-tip::before { display: none; }
+.leaflet-container a { color: """ + db + """; }
+.map-fallback {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    text-align: center; padding: 30px; color: """ + grey + """; font-size: 13px; z-index: 400;
+}
+
+/* hover tooltip */
+.leaflet-tooltip.map-tip {
+    font-family: 'Gotham Book', 'Segoe UI', Calibri, sans-serif; font-size: 11.5px; line-height: 1.4;
+    color: """ + db + """; background: #fff; border: 1.5px solid rgba(39,41,98,0.25);
+    border-radius: 8px; box-shadow: 0 3px 10px rgba(39,41,98,0.18); padding: 7px 10px;
+}
+.leaflet-tooltip.map-tip b { font-size: 12px; }
+.leaflet-tooltip.map-tip .t-sub { color: """ + grey + """; }
+
+/* clusters (custom divIcon; ring colour = dominant status inside) */
+.map-cluster {
+    display: flex; align-items: center; justify-content: center;
+    width: 34px; height: 34px; border-radius: 50%;
+    background: rgba(255,255,255,0.94); border: 3px solid """ + db + """;
+    color: """ + db + """; font-weight: bold; font-size: 11.5px;
+    box-shadow: 0 2px 8px rgba(39,41,98,0.25); cursor: pointer;
+}
+
+/* legend */
+.map-legend {
+    position: absolute; left: 12px; bottom: 12px; z-index: 500;
+    background: rgba(255,255,255,0.95); border: 1px solid """ + border + """;
+    border-radius: 10px; padding: 9px 12px; font-size: 11px; color: """ + db + """;
+    box-shadow: 0 2px 8px rgba(39,41,98,0.12); max-width: 240px;
+}
+.map-legend .lg-title { font-weight: bold; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: """ + grey + """; margin-bottom: 4px; }
+.map-legend .lg-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+.map-legend .lg-dot { width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid rgba(39,41,98,0.45); flex: none; }
+.map-legend .lg-note { color: """ + grey + """; margin-top: 5px; font-size: 10.5px; line-height: 1.35; }
+
+/* project detail panel (overlay, right side of the map) */
+.map-detail {
+    position: absolute; top: 12px; right: 12px; bottom: 12px; width: 370px; max-width: calc(100% - 24px);
+    z-index: 600; background: #fff; border: 1px solid """ + border + """; border-radius: 12px;
+    box-shadow: 0 6px 24px rgba(39,41,98,0.2); overflow-y: auto; padding: 14px 16px 16px;
+    font-size: 12px; color: """ + db + """;
+}
+.map-detail .md-head { display: flex; align-items: flex-start; gap: 10px; }
+.map-detail h3 { font-size: 15px; margin: 0; flex: 1; line-height: 1.25; }
+.map-detail .md-close {
+    border: none; background: transparent; color: """ + grey + """; font-size: 20px; line-height: 1;
+    cursor: pointer; padding: 0 2px; font-family: inherit;
+}
+.map-detail .md-close:hover { color: """ + db + """; }
+.map-detail .md-sub { color: """ + grey + """; margin: 4px 0 8px; font-size: 11.5px; }
+.map-detail .md-sub .prj-badge { margin-right: 6px; vertical-align: middle; }
+.map-detail .md-note { font-size: 10.5px; color: #92591C; background: #FDF1D6; border-radius: 6px; padding: 4px 8px; margin: 4px 0 8px; }
+.md-section { font-size: 10px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px; color: """ + grey + """; margin: 12px 0 5px; }
+.md-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+.md-metric .k { font-size: 10px; color: """ + grey + """; text-transform: uppercase; letter-spacing: 0.3px; }
+.md-metric .v { font-size: 14px; font-weight: bold; font-variant-numeric: tabular-nums; }
+.md-metric .v small { font-size: 10px; font-weight: normal; color: """ + grey + """; }
+.md-owner { display: flex; align-items: center; gap: 8px; margin: 3px 0; font-size: 11.5px; }
+.md-owner .nm { flex: 0 0 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.md-owner .bar { flex: 1; height: 6px; background: #ececf2; border-radius: 3px; overflow: hidden; }
+.md-owner .bar i { display: block; height: 100%; border-radius: 3px; }
+.md-owner .pc { flex: 0 0 44px; text-align: right; font-variant-numeric: tabular-nums; }
+.md-chart { position: relative; height: 130px; margin-top: 4px; }
+.md-links { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.md-link {
+    font-family: inherit; font-size: 11px; padding: 6px 12px; border-radius: 8px; cursor: pointer;
+    border: 1.5px solid """ + db + """; background: #fff; color: """ + db + """; transition: all 0.15s;
+}
+.md-link:hover { background: """ + db + """; color: #fff; }
+
+/* European gas balance placeholder */
+.map-soon {
+    min-height: 420px; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px; border: 1.5px dashed rgba(39,41,98,0.3); border-radius: 12px; background: """ + card + """;
+    color: """ + grey + """; text-align: center; padding: 30px;
+}
+.map-soon h2 { font-size: 18px; color: """ + db + """; letter-spacing: 1px; text-transform: uppercase; }
+.map-soon p { max-width: 520px; font-size: 12.5px; line-height: 1.5; }
+.map-soon .soon-pill {
+    display: inline-block; padding: 5px 14px; border-radius: 999px; font-size: 11px; font-weight: bold;
+    background: #fff; border: 1.5px solid """ + border + """; color: """ + db + """; letter-spacing: 0.5px;
+}
+@media (max-width: 768px) {
+    .map-wrap { margin: 0 8px 8px; }
+    .map-canvas-wrap { height: calc(100vh - 380px); min-height: 440px; }
+    .map-detail { top: auto; left: 12px; right: 12px; bottom: 12px; width: auto; max-height: 62%; }
+    .map-timeline input[type="range"] { width: 150px; }
+    .map-count { margin-left: 0; }
+}
+
 .prj-outlook-stub {
     display: flex; align-items: center; justify-content: center; min-height: 300px;
     border: 1px dashed """ + border + """; border-radius: 10px; background: """ + card + """;
@@ -2223,7 +2458,7 @@ var EMBED_TABS = __EMBED_TABS__;
 var EMBED_MAP = {};
 for (var _e=0; _e<EMBED_TABS.length; _e++) EMBED_MAP[EMBED_TABS[_e].key] = EMBED_TABS[_e];
 // Every tab button, in bar order: data datasets first, then embed tabs.
-var ALL_TAB_KEYS = DATASET_ORDER.concat(EMBED_TABS.map(function(t){ return t.key; }));
+var ALL_TAB_KEYS = DATASET_ORDER.concat(EMBED_TABS.map(function(t){ return t.key; })).concat(['map']);
 var embedActive = false;  // true while an embed (Storage/LNG) tab is showing
 
 function setActiveTabButton(key) {
@@ -2427,15 +2662,20 @@ function updatePeriodNote() {
     var msg = '';
     if (p==='Summer') msg = 'Summer 2025 = April 2025 to September 2025';
     else if (p==='Winter') msg = 'Winter 24/25 = October 2024 to March 2025';
-    var fc = forecastNoteText(DATA && DATA.latest_actual);
+    var fc = forecastNoteText(DATA && DATA.latest_actual, DATA && DATA.row_la_varies);
     el.innerHTML = msg + (msg && fc ? ' &nbsp;·&nbsp; ' : '') + fc;
 }
 /* ---- Actual / forecast boundary helpers (feedback #3) ---- */
 var FC_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-function forecastNoteText(la){
+function forecastNoteText(la, varies){
     if(!la) return '';
-    return '<span class="fc-note">Actuals through '+FC_MONTHS[(la.month||1)-1]+' '+la.year+' · later periods are forecast</span>';
+    return '<span class="fc-note">Actuals through '+FC_MONTHS[(la.month||1)-1]+' '+la.year+
+        (varies ? ' (some rows reported to an earlier month - each row is shaded from its own)' : '')+
+        ' · shaded periods are forecast</span>';
 }
+// Per-row forecast start: a row with its own boundary (row.la, from the master's
+// cell colours) is shaded from that; otherwise the dataset-level index is used.
+function rowFF(row, colMeta, ff){ return (row && row.la) ? firstForecastIdx(colMeta, row.la) : ff; }
 // Index of the first column that contains forecast data (its period extends past
 // the dataset's last actual month). -1 if none/unknown.
 function firstForecastIdx(colMeta, la){
@@ -2696,6 +2936,423 @@ function lngSetSubtab(which) {
     }
 }
 
+/* ============================================================
+   MAP TAB — Global LNG project map (Leaflet) + European gas balance placeholder.
+   Reads ALL_DATASETS.lng_projects directly (scenario-aware: scenApplyMode swaps
+   its capacity/production/utilisation by reference). Shown via body.map-active,
+   like the embed tabs; `embedActive` is reused so leaving the map re-renders the
+   data tab you return to. Dots: colour = status, size = capacity. Hover = tooltip,
+   click = detail panel. Filters are faceted like the LNG Projects bar; any
+   selection narrower than "everything" zooms the map to fit the selected dots.
+   ============================================================ */
+var MAP_STATUS_COLORS = __MAP_STATUS_COLORS__;
+var WORLD_GEOJSON = __WORLD_GEOJSON__;   // Natural Earth country outlines (own basemap)
+var MAP_STATUS_LABELS = ['Producing','Under construction','Pre-FID','Shut-down'];
+var MAP_UNCLASSIFIED = 'Not classified';   // projects with no Assumptions row (blank status)
+var MAP_DIMS = [['mapFilterStatus','status'],['mapFilterRegion','region'],
+                ['mapFilterCountry','country'],['mapFilterCompany','company'],['mapFilterProject','project']];
+var mapSub = 'lng', mapInitDone = false;
+var lngMap = null, lngMapClusterLayer = null, lngMapPlainLayer = null;
+var mapFilters = {status:[],region:[],country:[],company:[],project:[]};
+var mapClusterOn = true, mapTimelineOn = false, mapYear = null, mapBasis = 'risked', MAP_YEARS = [];
+var mapSelectedName = null, mapDetailCharts = [], mapMarkerByName = {}, mapWasFiltered = false, mapCapCache = null;
+
+function mapPRJ(){ return ALL_DATASETS.lng_projects; }
+function mapStatusOf(p){ return p.status || MAP_UNCLASSIFIED; }
+function mapColor(p){ return MAP_STATUS_COLORS[p.status] || '#9395A2'; }
+function mapIsMapped(p){ return typeof p.lat === 'number' && typeof p.lon === 'number'; }
+
+function showMapTab(sub){
+    if (sub) mapSub = sub;
+    embedActive = true;               // like embed tabs: returning to a data tab must re-render
+    setActiveTabButton('map');
+    document.body.className = 'map-active map-' + mapSub;
+    var ttl = (mapSub === 'lng') ? 'Global LNG Project Map' : 'European Gas Balance Map';
+    document.getElementById('pageTitle').textContent = ttl;
+    document.title = 'Palissy Advisors - ' + ttl;
+    var bl = document.getElementById('mapSubLng'), be = document.getElementById('mapSubEu');
+    if (bl) bl.classList.toggle('active', mapSub === 'lng');
+    if (be) be.classList.toggle('active', mapSub === 'eu');
+    if (mapSub === 'lng') {
+        var first = !mapInitDone;
+        lngMapInit();
+        // The canvas was display:none until now — Leaflet must re-measure it.
+        setTimeout(function(){ if (lngMap) { lngMap.invalidateSize(); if (first) mapFitToSelection(true); } }, 60);
+    }
+}
+
+function lngMapInit(){
+    if (mapInitDone) return;
+    var PRJ = mapPRJ(), canvas = document.getElementById('lngMapCanvas');
+    if (!PRJ || !canvas) return;
+    if (typeof L === 'undefined') {
+        canvas.innerHTML = '<div class="map-fallback">The map library could not be loaded (no internet access, or the CDN is blocked).<br>The project data is still available on the Global LNG tab.</div>';
+        return;
+    }
+    mapInitDone = true;
+    // Own vector basemap (embedded Natural Earth outlines) - no tiles, no API key.
+    // The world is bounded (no infinite horizontal wrap) and zoom is capped where
+    // the 50m outlines still look clean.
+    lngMap = L.map('lngMapCanvas', {
+        minZoom: 2, maxZoom: 8, zoomSnap: 0.5, worldCopyJump: false,
+        maxBounds: [[-75, -200], [85, 200]], maxBoundsViscosity: 0.9,
+        attributionControl: true
+    });
+    lngMap.attributionControl.setPrefix(false);
+    L.geoJSON(WORLD_GEOJSON, {
+        attribution: __MAP_ATTRIB__,
+        // Land = near-white; major lakes (features with w=1) = ocean colour.
+        style: function(f){
+            if (f.properties && f.properties.w) return { fillColor: '#e6edf4', fillOpacity: 1, color: '#c3c5d2', weight: 0.5, opacity: 1, interactive: false };
+            return { fillColor: '#f6f6f9', fillOpacity: 1, color: '#c3c5d2', weight: 0.7, opacity: 1 };
+        },
+        interactive: true,
+        onEachFeature: function(f, layer){
+            // Quiet country name on hover (sticky = follows the cursor); none for lakes.
+            if (f.properties && f.properties.n && !f.properties.w) layer.bindTooltip(f.properties.n, { sticky: true, direction: 'top', opacity: 0.85, className: 'map-country-tip' });
+            layer.on('click', function(){ mapCloseDetail(); });
+        }
+    }).addTo(lngMap);
+    lngMap.setView([22, 10], 2);
+    if (typeof L.markerClusterGroup === 'function') {
+        lngMapClusterLayer = L.markerClusterGroup({
+            maxClusterRadius: 30, spiderfyOnMaxZoom: true, showCoverageOnHover: false,
+            zoomToBoundsOnClick: true, spiderfyDistanceMultiplier: 1.5,
+            // Ring colour = the most common status inside the cluster.
+            iconCreateFunction: function(cluster){
+                var ms = cluster.getAllChildMarkers(), counts = {}, best = null, bestN = 0;
+                for (var i = 0; i < ms.length; i++) {
+                    var s = ms[i].options.mapStatus; counts[s] = (counts[s] || 0) + 1;
+                    if (counts[s] > bestN) { bestN = counts[s]; best = s; }
+                }
+                var col = MAP_STATUS_COLORS[best] || '#272962';
+                return L.divIcon({ html: '<div class="map-cluster" style="border-color:' + col + '">' + ms.length + '</div>', className: '', iconSize: [34, 34] });
+            }
+        });
+    } else { mapClusterOn = false; var cc = document.getElementById('mapClusterChk'); if (cc) { cc.checked = false; cc.disabled = true; } }
+    lngMapPlainLayer = L.layerGroup();
+    lngMap.on('click', function(){ mapCloseDetail(); });
+    mapBuildFilters();
+    mapBuildUnit();
+    mapBuildTimeline();
+    mapRender();
+}
+
+/* ---- filters (faceted, "All" = every value individually, like the LNG Projects bar) ---- */
+function mapFieldVal(p, dim){ return dim==='project'?p.name : dim==='status'?mapStatusOf(p) : dim==='region'?p.region : dim==='country'?p.country : null; }
+function mapAllValues(dim){
+    var PRJ = mapPRJ();
+    if (dim==='status') { var s = PRJ.status_order.slice(); if (PRJ.projects.some(function(p){ return !p.status; })) s.push(MAP_UNCLASSIFIED); return s; }
+    if (dim==='region')  return PRJ.region_order.slice();
+    if (dim==='country') return PRJ.countries.slice();
+    if (dim==='company') return PRJ.companies.slice();
+    if (dim==='project') return PRJ.projects.map(function(p){ return p.name; }).sort();
+    return [];
+}
+function mapMatchDim(p, dim){
+    var sel = mapFilters[dim]; if (!sel.length) return true;
+    if (dim==='company') return p.companies.some(function(c){ return sel.indexOf(c) >= 0; });
+    return sel.indexOf(mapFieldVal(p, dim)) >= 0;
+}
+function mapMatchExcept(p, ex){ return MAP_DIMS.every(function(d){ return d[1]===ex || mapMatchDim(p, d[1]); }); }
+function mapFiltered(){ return mapPRJ().projects.filter(function(p){ return MAP_DIMS.every(function(d){ return mapMatchDim(p, d[1]); }); }); }
+function mapAvailable(dim){
+    var out = [], seen = {};
+    mapPRJ().projects.forEach(function(p){
+        if (!mapMatchExcept(p, dim)) return;
+        var vals = (dim==='company') ? p.companies : [mapFieldVal(p, dim)];
+        vals.forEach(function(v){ if (v != null && !seen[v]) { seen[v] = 1; out.push(v); } });
+    });
+    return out;
+}
+function mapBuildFilters(){
+    MAP_DIMS.forEach(function(d){ mapMakeFilter(d[0], d[1], mapAllValues(d[1])); });
+    mapUpdateFilterUI();
+}
+function mapMakeFilter(containerId, dim, items){
+    var container = document.getElementById(containerId); if (!container) return;
+    container.innerHTML = ''; container.classList.add('multi-select');
+    var button = document.createElement('button'); button.type = 'button'; button.className = 'ms-button'; container.appendChild(button);
+    var panel = document.createElement('div'); panel.className = 'ms-panel'; container.appendChild(panel);
+    var search = document.createElement('input'); search.type = 'text'; search.className = 'ms-search'; search.placeholder = 'Search…';
+    search.addEventListener('input', function(){ mapUpdateFilterUI(); });
+    search.addEventListener('click', function(e){ e.stopPropagation(); });
+    panel.appendChild(search);
+    var allLbl = document.createElement('label'); allLbl.className = 'ms-item ms-all'; allLbl.setAttribute('data-val', '__ALL__');
+    var allCb = document.createElement('input'); allCb.type = 'checkbox';
+    var allSp = document.createElement('span'); allSp.textContent = 'All';
+    allLbl.appendChild(allCb); allLbl.appendChild(allSp);
+    allCb.addEventListener('change', function(){ mapToggle(dim, '__ALL__'); });
+    panel.appendChild(allLbl);
+    var allDiv = document.createElement('div'); allDiv.className = 'ms-divider'; panel.appendChild(allDiv);
+    items.forEach(function(it){
+        var lbl = document.createElement('label'); lbl.className = 'ms-item'; lbl.setAttribute('data-val', it);
+        var cb = document.createElement('input'); cb.type = 'checkbox';
+        var sp = document.createElement('span'); sp.textContent = it;
+        lbl.appendChild(cb); lbl.appendChild(sp);
+        cb.addEventListener('change', function(){ mapToggle(dim, it); });
+        panel.appendChild(lbl);
+    });
+    button.addEventListener('click', function(ev){ ev.stopPropagation(); container.classList.toggle('open'); });
+}
+function mapToggle(dim, val){
+    if (val === '__ALL__') {
+        var all = mapAllValues(dim), cur = mapFilters[dim];
+        mapFilters[dim] = (cur.length >= all.length && all.length > 0) ? [] : all;
+    } else {
+        var arr = mapFilters[dim], i = arr.indexOf(val); if (i >= 0) arr.splice(i, 1); else arr.push(val);
+    }
+    mapUpdateFilterUI(); mapRender(); mapFitToSelection(false);
+}
+function mapResetFilters(){
+    mapFilters = {status:[],region:[],country:[],company:[],project:[]};
+    MAP_DIMS.forEach(function(d){ var c = document.getElementById(d[0]); var s = c && c.querySelector('.ms-search'); if (s) s.value = ''; });
+    mapUpdateFilterUI(); mapRender(); mapFitToSelection(false);
+}
+function mapUpdateFilterUI(){
+    MAP_DIMS.forEach(function(d){
+        var dim = d[1], container = document.getElementById(d[0]); if (!container) return;
+        var avail = mapAvailable(dim);
+        var search = container.querySelector('.ms-search'); var q = ((search && search.value) || '').toLowerCase();
+        var items = container.querySelectorAll('label.ms-item');
+        for (var i = 0; i < items.length; i++) {
+            var val = items[i].getAttribute('data-val'), cb = items[i].querySelector('input');
+            if (val === '__ALL__') {
+                var nSel = mapFilters[dim].length, nAll = mapAllValues(dim).length;
+                if (cb) { cb.checked = (nSel === 0 || nSel >= nAll); cb.indeterminate = (nSel > 0 && nSel < nAll); }
+                items[i].classList.remove('ms-unavail'); continue;
+            }
+            var checked = mapFilters[dim].indexOf(val) >= 0;
+            if (cb) cb.checked = checked;
+            var ok = (avail.indexOf(val) >= 0 || checked) && (!q || val.toLowerCase().indexOf(q) >= 0);
+            items[i].classList.toggle('ms-unavail', !ok);
+        }
+        var btn = container.querySelector('.ms-button'), sel = mapFilters[dim];
+        if (btn) { btn.textContent = (sel.length === 0 || sel.length >= mapAllValues(dim).length) ? 'All' : (sel.length <= 2 ? sel.join(', ') : sel.length + ' selected'); btn.title = sel.join(', '); }
+    });
+}
+
+/* ---- unit (capacity is per-annum: mmtpa / bcf/yr / … or a daily rate) ---- */
+function mapBuildUnit(){
+    var us = document.getElementById('mapUnit'), PRJ = mapPRJ(); if (!us) return;
+    us.innerHTML = '';
+    PRJ.units.forEach(function(u){ us.innerHTML += '<option value="' + u + '"' + (u === PRJ.default_unit ? ' selected' : '') + '>' + mapCapUnitLabel(u) + '</option>'; });
+}
+function mapUnit(){ var s = document.getElementById('mapUnit'); return (s && s.value) ? s.value : mapPRJ().default_unit; }
+function mapUnitCfg(){ var PRJ = mapPRJ(); return PRJ.unit_config[mapUnit()] || PRJ.unit_config[PRJ.default_unit]; }
+function mapCapUnitLabel(u){ var c = mapPRJ().unit_config[u]; if (u === 'mmt') return 'mmtpa'; if (c.isRate) return c.rateLabel; return c.volLabel + '/yr'; }
+function mapConvCap(mmt){ if (mmt == null || mmt === '' || isNaN(mmt)) return null; var c = mapUnitCfg(); return c.isRate ? (mmt / 365.25) * c.rateFactor : mmt * c.volFactor; }
+function mapConvFlow(mmt, days){ if (mmt == null || isNaN(mmt)) return null; var c = mapUnitCfg(); return c.isRate ? (mmt / days) * c.rateFactor : mmt * c.volFactor; }
+function mapOnUnitChange(){ mapRender(); if (mapSelectedName) mapShowDetail(mapSelectedName); }
+
+/* ---- timeline: size dots by the model's end-of-year capacity level ---- */
+function mapBuildTimeline(){
+    var PRJ = mapPRJ(), sl = document.getElementById('mapYearSlider');
+    // NB: capacity views are keyed by period directly (no .views wrapper, unlike
+    // production / utilisation).
+    var v = PRJ.capacity && PRJ.capacity.risked && PRJ.capacity.risked['Annual CY'];
+    if (!sl || !v) { var tc = document.getElementById('mapTimelineChk'); if (tc) tc.disabled = true; return; }
+    var la = PRJ.latest_actual ? PRJ.latest_actual.year : (new Date()).getFullYear();
+    MAP_YEARS = v.col_meta.map(function(c){ return c.year; }).filter(function(y){ return y >= la - 1; });
+    if (!MAP_YEARS.length) return;
+    sl.min = 0; sl.max = MAP_YEARS.length - 1;
+    var i0 = MAP_YEARS.indexOf(la); sl.value = i0 >= 0 ? i0 : 0;
+    mapYear = MAP_YEARS[parseInt(sl.value, 10)];
+    var lb = document.getElementById('mapYearLabel'); if (lb) lb.textContent = mapYear;
+}
+function mapOnYearSlide(v){ mapYear = MAP_YEARS[parseInt(v, 10)]; var lb = document.getElementById('mapYearLabel'); if (lb) lb.textContent = mapYear; mapRender(); }
+function mapSetTimeline(on){ mapTimelineOn = !!on; var tl = document.getElementById('mapTimeline'); if (tl) tl.style.display = mapTimelineOn ? 'flex' : 'none'; mapRender(); }
+function mapSetBasis(b){
+    mapBasis = b;
+    var r = document.getElementById('mapBasisRisked'), u = document.getElementById('mapBasisUnrisked');
+    if (r) r.className = (b === 'risked') ? 'active' : ''; if (u) u.className = (b === 'unrisked') ? 'active' : '';
+    mapRender();
+}
+function mapSetCluster(on){ mapClusterOn = !!on && !!lngMapClusterLayer; mapRender(); }
+// Capacity (mmtpa) that sizes a dot: nameplate (unrisked) by default; in timeline
+// mode the end-of-year level from the model's own capacity series (risked/unrisked,
+// scenario-aware because the capacity object is swapped by scenApplyMode).
+function mapCapAt(p){
+    if (!mapTimelineOn || mapYear == null) return (typeof p.unrisked === 'number') ? p.unrisked : 0;
+    var PRJ = mapPRJ(), cap = PRJ.capacity && PRJ.capacity[mapBasis]; if (!cap) return 0;
+    var v = cap['Annual CY']; if (!v) return 0;
+    if (!mapCapCache || mapCapCache.src !== cap) {
+        mapCapCache = { src: cap, rows: {}, yi: {} };
+        v.rows.forEach(function(r){ mapCapCache.rows[r.label] = r.base; });
+        v.col_meta.forEach(function(c, i){ mapCapCache.yi[c.year] = i; });
+    }
+    var row = mapCapCache.rows[p.name], i = mapCapCache.yi[mapYear];
+    if (!row || i == null) return 0;
+    var x = row[i]; return (typeof x === 'number' && !isNaN(x)) ? x : 0;
+}
+
+/* ---- render dots ---- */
+function mapRender(){
+    if (!lngMap) return;
+    var PRJ = mapPRJ(), list = mapFiltered(), shown = 0, unmappedAll = 0;
+    PRJ.projects.forEach(function(p){ if (!mapIsMapped(p)) unmappedAll++; });
+    if (lngMapClusterLayer) { lngMapClusterLayer.clearLayers(); if (lngMap.hasLayer(lngMapClusterLayer)) lngMap.removeLayer(lngMapClusterLayer); }
+    lngMapPlainLayer.clearLayers(); if (lngMap.hasLayer(lngMapPlainLayer)) lngMap.removeLayer(lngMapPlainLayer);
+    mapMarkerByName = {};
+    // Same-site phases share one coordinate. Clustered: the cluster spiderfies them
+    // apart on zoom. Unclustered: spread duplicates on a small ring so each dot stays
+    // hoverable (their true location is the ring's centre).
+    var groups = {};
+    list.forEach(function(p){ if (!mapIsMapped(p)) return; var k = p.lat.toFixed(3) + ',' + p.lon.toFixed(3); (groups[k] = groups[k] || []).push(p); });
+    var target = mapClusterOn ? lngMapClusterLayer : lngMapPlainLayer, uCap = mapCapUnitLabel(mapUnit());
+    Object.keys(groups).forEach(function(k){
+        var g = groups[k];
+        g.forEach(function(p, i){
+            var lat = p.lat, lon = p.lon;
+            if (!mapClusterOn && g.length > 1) {
+                var ang = 2 * Math.PI * i / g.length, rr = 0.18;
+                lat += rr * Math.cos(ang); lon += rr * Math.sin(ang) / Math.max(0.2, Math.cos(p.lat * Math.PI / 180));
+            }
+            var cap = mapCapAt(p), col = mapColor(p), live = cap > 1e-9;
+            var r = live ? Math.min(24, 4 + Math.sqrt(cap) * 1.9) : 4;
+            var m = L.circleMarker([lat, lon], {
+                radius: r, color: live ? '#272962' : col, weight: live ? 1 : 1.5, opacity: 0.75,
+                fillColor: col, fillOpacity: live ? 0.82 : 0.12, dashArray: live ? null : '2,2',
+                bubblingMouseEvents: false, mapStatus: mapStatusOf(p), mapName: p.name
+            });
+            m.bindTooltip(mapTipHtml(p, cap, uCap), { direction: 'top', offset: [0, -r - 2], opacity: 1, className: 'map-tip' });
+            m.on('click', function(){ mapShowDetail(p.name); });
+            m.on('mouseover', function(){ this.setStyle({ weight: 2.5, opacity: 1 }); });
+            m.on('mouseout', function(){ this.setStyle({ weight: live ? 1 : 1.5, opacity: 0.75 }); });
+            target.addLayer(m); mapMarkerByName[p.name] = m; shown++;
+        });
+    });
+    lngMap.addLayer(target);
+    mapRenderLegend(uCap);
+    var cnt = document.getElementById('mapCount');
+    if (cnt) {
+        cnt.textContent = 'Showing ' + shown + ' of ' + (PRJ.projects.length - unmappedAll) + ' mapped projects'
+            + (unmappedAll ? ' · ' + unmappedAll + ' without coordinates' : '')
+            + (mapTimelineOn ? ' · dot size = ' + mapBasis + ' capacity at end-' + mapYear : ' · dot size = nameplate capacity');
+    }
+    if (mapSelectedName && !mapMarkerByName[mapSelectedName]) mapCloseDetail();
+}
+function mapTipHtml(p, cap, u){
+    var c = mapConvCap(cap);
+    var capTxt = (c != null && cap > 0) ? prjNum(c, c < 10 ? 2 : 1) + ' ' + u : (mapTimelineOn ? 'Not online in ' + mapYear : 'Capacity n/a');
+    return '<b>' + prjEsc(p.name) + '</b><br><span class="t-sub">' + prjEsc(p.country) + ' · ' + prjEsc(mapStatusOf(p)) + '</span><br>' + capTxt
+        + (p.operator ? '<br><span class="t-sub">' + prjEsc(p.operator) + '</span>' : '');
+}
+function mapRenderLegend(u){
+    var el = document.getElementById('mapLegend'); if (!el) return;
+    var h = '<div class="lg-title">Status</div>';
+    MAP_STATUS_LABELS.forEach(function(s){ h += '<div class="lg-row"><span class="lg-dot" style="background:' + MAP_STATUS_COLORS[s] + '"></span>' + s + '</div>'; });
+    if (mapPRJ().projects.some(function(p){ return !p.status; })) h += '<div class="lg-row"><span class="lg-dot" style="background:#9395A2"></span>' + MAP_UNCLASSIFIED + '</div>';
+    h += '<div class="lg-note">Dot size = ' + (mapTimelineOn ? (mapBasis + ' capacity, end-' + mapYear) : 'nameplate capacity') + ' (' + u + ').'
+       + (mapTimelineOn ? ' Hollow = not online that year.' : '') + ' Hover for a summary, click for details.</div>';
+    el.innerHTML = h;
+}
+// Zoom to the selected dots when the selection is narrower than "everything";
+// back to the world view when it widens again.
+function mapFitToSelection(initial){
+    if (!lngMap) return;
+    var list = mapFiltered().filter(mapIsMapped), allMapped = mapPRJ().projects.filter(mapIsMapped).length;
+    if (!list.length || list.length === allMapped) {
+        if (mapWasFiltered || initial) { lngMap.setView([22, 10], 2); mapWasFiltered = false; }
+        return;
+    }
+    var b = L.latLngBounds(list.map(function(p){ return [p.lat, p.lon]; }));
+    lngMap.fitBounds(b.pad(0.3), { maxZoom: 6 });
+    mapWasFiltered = true;
+}
+
+/* ---- detail panel (click a dot) ---- */
+function mapMetric(k, v, u){ return '<div class="md-metric"><div class="k">' + k + '</div><div class="v">' + v + (u ? ' <small>' + u + '</small>' : '') + '</div></div>'; }
+function mapShowDetail(name){
+    var PRJ = mapPRJ(), p = null;
+    for (var i = 0; i < PRJ.projects.length; i++) { if (PRJ.projects[i].name === name) { p = PRJ.projects[i]; break; } }
+    var el = document.getElementById('mapDetail'); if (!el || !p) return;
+    mapSelectedName = name;
+    mapDetailCharts.forEach(function(c){ try { c.destroy(); } catch (e) {} }); mapDetailCharts = [];
+    var u = mapCapUnitLabel(mapUnit());
+    // Reflect scenario edits (CoS / start) when the scenario view is on, like the Projects tab.
+    var ed = (typeof scenEdits !== 'undefined' && typeof scenMode !== 'undefined' && scenMode === 'scenario') ? (scenEdits[name] || {}) : {};
+    var cos = (ed.cos != null ? ed.cos : p.cos);
+    var risked = (ed.cos != null && typeof p.unrisked === 'number') ? p.unrisked * ed.cos : p.risked;
+    var start = (ed.startIdx != null && typeof SCEN_MONTHS !== 'undefined' && SCEN_MONTHS) ? SCEN_MONTHS[ed.startIdx] : prjStart(p.start);
+    var h = '<div class="md-head"><h3>' + prjEsc(p.name) + '</h3><button class="md-close" onclick="mapCloseDetail()" title="Close">&times;</button></div>';
+    h += '<div class="md-sub">' + prjBadge(mapStatusOf(p)) + prjEsc(p.country) + ' · ' + prjEsc(p.region) + '</div>';
+    if (p.loc_note && /verify|approximate|unconfirmed/i.test(p.loc_note)) h += '<div class="md-note">Map location approximate: ' + prjEsc(p.loc_note) + '</div>';
+    h += '<div class="md-section">Key assumptions</div><div class="md-metrics">';
+    h += mapMetric('Unrisked capacity', prjNum(mapConvCap(p.unrisked), 1), u);
+    h += mapMetric('Risked capacity', prjNum(mapConvCap(risked), 1), u);
+    h += mapMetric('Chance of success', (p.status === 'Producing' && cos == null) ? '100%' : prjPct(cos), '');
+    h += mapMetric('Start date', start, '');
+    h += mapMetric('Utilisation forecast', (typeof p.util_forecast === 'number') ? prjPct(p.util_forecast) : (p.util_forecast ? prjEsc(p.util_forecast) : '—'), '');
+    h += mapMetric('Utilisation decline', (typeof p.util_decline === 'number') ? prjPct(p.util_decline) + '/yr' : '—', '');
+    h += '</div>';
+    if (p.owners && p.owners.length) {
+        h += '<div class="md-section">Ownership</div>';
+        p.owners.forEach(function(o, i){
+            var s = (typeof o.stake === 'number') ? o.stake : null;
+            h += '<div class="md-owner"><span class="nm" title="' + prjAttr(o.name) + '">' + prjEsc(o.name) + '</span>'
+               + '<span class="bar"><i style="width:' + (s != null ? Math.min(100, s * 100) : 0) + '%;background:' + PRJ_OWNER_COLORS[i % PRJ_OWNER_COLORS.length] + '"></i></span>'
+               + '<span class="pc">' + prjStake(s) + '</span></div>';
+        });
+    }
+    if (p.hc_note) h += '<div class="md-note">' + prjEsc(p.hc_note) + '</div>';
+    h += '<div class="md-section" id="mdProdTitle">Production</div><div class="md-chart"><canvas id="mdProdChart"></canvas></div>';
+    h += '<div class="md-section">Utilisation (%, calendar year)</div><div class="md-chart"><canvas id="mdUtilChart"></canvas></div>';
+    h += '<div class="md-links"><button class="md-link" onclick="mapGoTo(\'outlook\')">Open in Supply Outlook</button>'
+       + '<button class="md-link" onclick="mapGoTo(\'projects\')">Project assumptions</button></div>';
+    el.innerHTML = h; el.style.display = 'block'; el.scrollTop = 0;
+    mapDetailCharts = mapDrawMiniCharts(p);
+}
+function mapCloseDetail(){
+    mapSelectedName = null;
+    var el = document.getElementById('mapDetail'); if (el) el.style.display = 'none';
+    mapDetailCharts.forEach(function(c){ try { c.destroy(); } catch (e) {} }); mapDetailCharts = [];
+}
+// Jump to the Global LNG sub-tabs with this project pre-selected in the filter bar.
+function mapGoTo(sub){
+    var name = mapSelectedName; if (!name) return;
+    lngSetSubtab(sub);
+    prjFilters.table = { status: [], region: [], country: [], company: [], project: [name] };
+    var vb = document.getElementById('prjViewBy'); if (vb) vb.value = 'project';
+    prjApplyFilters();
+    window.scrollTo(0, 0);
+}
+function mapDrawMiniCharts(p){
+    var PRJ = mapPRJ(), out = []; if (typeof Chart === 'undefined') return out;
+    var la = PRJ.latest_actual ? PRJ.latest_actual.year : (new Date()).getFullYear();
+    var y0 = la - 3, y1 = la + 9;
+    function series(block, conv){
+        var v = block && block.views && block.views['Annual CY']; if (!v) return null;
+        var row = null; for (var i = 0; i < v.rows.length; i++) { if (v.rows[i].label === p.name) { row = v.rows[i]; break; } }
+        if (!row) return null;
+        var labels = [], data = [], fc = [];
+        v.col_meta.forEach(function(c, i){ if (c.year < y0 || c.year > y1) return; labels.push(String(c.year)); data.push(conv(row.base[i], c.days)); fc.push(v.netok ? v.netok[i] : 1); });
+        return { labels: labels, data: data, fc: fc };
+    }
+    var prod = series(PRJ.production, function(x, days){ return (typeof x === 'number') ? mapConvFlow(x, days) : null; });
+    var util = series(PRJ.utilisation, function(x){ return (typeof x === 'number') ? x * 100 : null; });
+    var fam = "'Gotham Book','Segoe UI',Calibri,sans-serif";
+    var pt = document.getElementById('mdProdTitle'); if (pt) { var c = mapUnitCfg(); pt.textContent = 'Production (' + (c.isRate ? c.rateLabel : c.volLabel) + ', calendar year)'; }
+    function opts(extraY){
+        var y = { beginAtZero: true, grid: { color: '#eef0f5' }, ticks: { font: { family: fam, size: 9 } } };
+        for (var k in (extraY || {})) y[k] = extraY[k];
+        return { responsive: true, maintainAspectRatio: false, animation: false,
+                 plugins: { legend: { display: false }, tooltip: { titleFont: { family: fam }, bodyFont: { family: fam } } },
+                 scales: { x: { grid: { display: false }, ticks: { font: { family: fam, size: 9 }, maxRotation: 0, autoSkip: true } }, y: y } };
+    }
+    var stub = '<div class="prj-outlook-stub" style="min-height:0;height:100%;font-size:11px;">No series in the model</div>';
+    var pc = document.getElementById('mdProdChart');
+    if (pc && prod) {
+        // Solid = reported, lighter = forecast (netok flags the forecast buckets).
+        out.push(new Chart(pc, { type: 'bar', data: { labels: prod.labels, datasets: [{ data: prod.data, backgroundColor: prod.fc.map(function(f){ return f ? 'rgba(39,41,98,0.45)' : '#272962'; }), borderWidth: 0 }] }, options: opts() }));
+    } else if (pc) { pc.parentNode.innerHTML = stub; }
+    var uc = document.getElementById('mdUtilChart');
+    if (uc && util) {
+        out.push(new Chart(uc, { type: 'line', data: { labels: util.labels, datasets: [{ data: util.data, borderColor: '#539648', backgroundColor: 'rgba(83,150,72,0.15)', fill: true, tension: 0.25, pointRadius: 2, spanGaps: false }] }, options: opts({ suggestedMax: 100 }) }));
+    } else if (uc) { uc.parentNode.innerHTML = stub; }
+    return out;
+}
+
 /* === MAIN TABLE === */
 function updateTable() {
     var period = document.getElementById('periodSelector').value;
@@ -2744,6 +3401,7 @@ function updateTable() {
         var dl = isStock?getStockLabel(item.label,unitKey):item.label;
         lbl+=dl.replace(/&/g,'&amp;').replace(/</g,'&lt;');
         bHtml+= hasCh?'<td data-toggle="'+h+'">'+lbl+'</td>':'<td>'+lbl+'</td>';
+        var ffr = rowFF(rowData, view.col_meta, ff);
         for (var i=0;i<vis.length;i++) {
             var ci=vis[i], baseVal=rowData.base[ci];
             var dv;
@@ -2760,7 +3418,7 @@ function updateTable() {
             } else {
                 dv = formatNum(computeDisplayValue(baseVal, unitKey, isStock, false, days[ci]), false);
             }
-            bHtml+='<td'+fcAttr(ci,ff)+'>'+dv+'</td>';
+            bHtml+='<td'+fcAttr(ci,ffr)+'>'+dv+'</td>';
         }
         bHtml+='</tr>';
         if (hasCh) {
@@ -2769,6 +3427,7 @@ function updateTable() {
                 var hid=!isExp?' hidden':'';
                 bHtml+='<tr class="child-row'+hid+'">';
                 bHtml+='<td>'+ch.label.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</td>';
+                var ffc = rowFF(cd, view.col_meta, ff);
                 for (var i=0;i<vis.length;i++) {
                     var ci=vis[i];
                     var cdv;
@@ -2779,7 +3438,7 @@ function updateTable() {
                     } else {
                         cdv = formatNum(computeDisplayValue(cd.base[ci], unitKey, false, false, days[ci]), false);
                     }
-                    bHtml+='<td'+fcAttr(ci,ff)+'>'+cdv+'</td>';
+                    bHtml+='<td'+fcAttr(ci,ffc)+'>'+cdv+'</td>';
                 }
                 bHtml+='</tr>';
             }
@@ -2823,12 +3482,13 @@ function updateGrowthTable() {
         if (hasCh) dl+='<span class="toggle-arrow'+(isExp?' expanded':'')+'">&#9654;</span> ';
         dl+=item.label.replace(/&/g,'&amp;').replace(/</g,'&lt;');
         bHtml+=hasCh?'<td data-toggle-g="'+h+'">'+dl+'</td>':'<td>'+dl+'</td>';
+        var ffr = rowFF(rowData, meta, ff);
         for (var i=0;i<vis.length;i++) {
             var ci=vis[i];
             var gv = computeGrowthCell(rowData.base,days,meta,ci,period,gt,isStock||isPct);
-            if (gv===null) { bHtml+='<td'+fcAttr(ci,ff)+'></td>'; continue; }
+            if (gv===null) { bHtml+='<td'+fcAttr(ci,ffr)+'></td>'; continue; }
             var cls = gv>0.0001?'g-pos':(gv<-0.0001?'g-neg':'');
-            bHtml+='<td'+fcAttr(ci,ff,cls)+'>'+formatGrowth(gv,isPct)+'</td>';
+            bHtml+='<td'+fcAttr(ci,ffr,cls)+'>'+formatGrowth(gv,isPct)+'</td>';
         }
         bHtml+='</tr>';
         if (hasCh) {
@@ -2837,12 +3497,13 @@ function updateGrowthTable() {
                 var hid=!isExp?' hidden':'';
                 bHtml+='<tr class="child-row'+hid+'">';
                 bHtml+='<td>'+ch.label.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</td>';
+                var ffc = rowFF(cd, meta, ff);
                 for (var i=0;i<vis.length;i++) {
                     var ci=vis[i];
                     var gv=computeGrowthCell(cd.base,days,meta,ci,period,gt,false);
-                    if (gv===null) { bHtml+='<td'+fcAttr(ci,ff)+'></td>'; continue; }
+                    if (gv===null) { bHtml+='<td'+fcAttr(ci,ffc)+'></td>'; continue; }
                     var cls=gv>0.0001?'g-pos':(gv<-0.0001?'g-neg':'');
-                    bHtml+='<td'+fcAttr(ci,ff,cls)+'>'+formatGrowth(gv,false)+'</td>';
+                    bHtml+='<td'+fcAttr(ci,ffc,cls)+'>'+formatGrowth(gv,false)+'</td>';
                 }
                 bHtml+='</tr>';
             }
@@ -6306,6 +6967,17 @@ document.addEventListener('DOMContentLoaded', function() {
 
     js = js.replace("__DATA_PLACEHOLDER__", data_json)
     js = js.replace("__EMBED_TABS__", json.dumps(EMBED_TABS))
+    js = js.replace("__MAP_STATUS_COLORS__", json.dumps(MAP_STATUS_COLORS))
+    js = js.replace("__MAP_ATTRIB__", json.dumps(MAP_ATTRIB))
+    # Embedded vector basemap (already compact JSON; no re-serialisation needed).
+    if os.path.exists(WORLD_FILE):
+        with open(WORLD_FILE, encoding="utf-8") as f:
+            world_json = f.read().strip()
+        print(f"  World outlines embedded: {len(world_json)/1024:.0f} KB from {os.path.basename(WORLD_FILE)}")
+    else:
+        world_json = '{"type":"FeatureCollection","features":[]}'
+        print(f"  WARNING: {WORLD_FILE} not found - the map will have no country outlines")
+    js = js.replace("__WORLD_GEOJSON__", world_json)
 
     # Build tab toggle buttons: data datasets first, then embed tabs (Storage/LNG).
     # `hidden_tab` datasets (e.g. lng_projects) get no top-level button — they're
@@ -6327,12 +6999,22 @@ document.addEventListener('DOMContentLoaded', function() {
             f'<button class="dataset-toggle-btn" '
             f'id="btnDataset-{t["key"]}" onclick="showEmbedTab(\'{t["key"]}\')">{t["label"]}</button>'
         )
+    # Map tab (Global LNG project map / European gas balance placeholder) — last.
+    toggle_buttons.append(
+        f'<button class="dataset-toggle-btn" id="btnDataset-{MAP_TAB["key"]}" '
+        f'onclick="showMapTab()">{MAP_TAB["label"]}</button>'
+    )
 
     html = '<!DOCTYPE html>\n<html lang="en">\n<head>\n'
     html += '<meta charset="UTF-8">\n'
     html += '<meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
     html += '<title>Palissy Advisors</title>\n'
     html += '<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>\n'
+    # Leaflet + marker clustering for the Map tab (CSS before JS).
+    html += f'<link rel="stylesheet" href="{LEAFLET_CSS}">\n'
+    html += f'<link rel="stylesheet" href="{MARKERCLUSTER_CSS}">\n'
+    html += f'<script src="{LEAFLET_JS}"></script>\n'
+    html += f'<script src="{MARKERCLUSTER_JS}"></script>\n'
     html += '<style>\n' + css + '\n</style>\n'
     html += '</head>\n<body>\n\n'
 
@@ -6641,6 +7323,52 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '    <iframe id="embedFrame" title="Palissy external dashboard" loading="lazy"></iframe>\n'
     html += '</div>\n\n'
 
+    # === Map tab: sub-tab bar (Global LNG | European gas balance) + the two panes ===
+    html += '<div class="map-subtab-bar" id="mapSubtabBar">\n'
+    html += '    <button class="lng-subtab-btn active" id="mapSubLng" onclick="showMapTab(\'lng\')">Global LNG</button>\n'
+    html += '    <button class="lng-subtab-btn" id="mapSubEu" onclick="showMapTab(\'eu\')">European gas balance</button>\n'
+    html += '</div>\n\n'
+    html += '<div class="map-wrap" id="mapWrap">\n'
+    # -- Global LNG project map --
+    html += '  <div class="map-pane" id="mapPaneLng">\n'
+    html += '    <div class="prj-filter-bar map-filter-bar">\n'
+    html += '      <div class="prj-filter-group"><label>Unit</label><select id="mapUnit" onchange="mapOnUnitChange()"></select></div>\n'
+    for lbl, fid in [("Status", "mapFilterStatus"), ("Region", "mapFilterRegion"),
+                     ("Country", "mapFilterCountry"), ("Company", "mapFilterCompany"),
+                     ("Project", "mapFilterProject")]:
+        html += f'      <div class="prj-filter-group"><label>{lbl}</label><div class="multi-select" id="{fid}"></div></div>\n'
+    html += '      <button class="prj-filter-reset" onclick="mapResetFilters()">Reset filters</button>\n'
+    html += '    </div>\n'
+    html += '    <div class="map-options-row">\n'
+    html += '      <label class="map-check" title="Merge nearby projects into a numbered circle; click it to zoom in"><input type="checkbox" id="mapClusterChk" checked onchange="mapSetCluster(this.checked)"> Group nearby projects</label>\n'
+    html += '      <label class="map-check" title="Size each dot by the model\'s capacity at the end of a chosen year instead of nameplate"><input type="checkbox" id="mapTimelineChk" onchange="mapSetTimeline(this.checked)"> Timeline</label>\n'
+    html += '      <div class="map-timeline" id="mapTimeline" style="display:none;">\n'
+    html += '        <input type="range" id="mapYearSlider" min="0" max="0" value="0" oninput="mapOnYearSlide(this.value)">\n'
+    html += '        <span class="map-year" id="mapYearLabel"></span>\n'
+    html += '        <div class="growth-toggle">\n'
+    html += '          <button id="mapBasisRisked" class="active" onclick="mapSetBasis(\'risked\')">Risked</button>\n'
+    html += '          <button id="mapBasisUnrisked" onclick="mapSetBasis(\'unrisked\')">Unrisked</button>\n'
+    html += '        </div>\n'
+    html += '      </div>\n'
+    html += '      <span class="map-count" id="mapCount"></span>\n'
+    html += '    </div>\n'
+    html += '    <div class="map-canvas-wrap" id="lngMapWrap">\n'
+    html += '      <div id="lngMapCanvas"></div>\n'
+    html += '      <div class="map-legend" id="mapLegend"></div>\n'
+    html += '      <div class="map-detail" id="mapDetail" style="display:none;"></div>\n'
+    html += '    </div>\n'
+    html += '  </div>\n'
+    # -- European gas balance map: placeholder until the per-country data is wired --
+    html += '  <div class="map-pane" id="mapPaneEu">\n'
+    html += '    <div class="map-soon">\n'
+    html += '      <span class="soon-pill">COMING SOON</span>\n'
+    html += '      <h2>European Gas Balance Map</h2>\n'
+    html += '      <p>An interactive map of Europe with country-level detail — pipeline flows, production, storage and LNG send-out where the data is confirmed. Hover or click a country to see what we know about it.</p>\n'
+    html += '      <p>This view is being built. The Global LNG map is available now.</p>\n'
+    html += '    </div>\n'
+    html += '  </div>\n'
+    html += '</div>\n\n'
+
     # === LNG Projects tab: sub-tabs + filter bar + Region/Country/Project tree ===
     html += '<div class="projects-tab-wrap" id="projectsTab">\n'
     # (Sub-tab switching is handled by the shared lng-subtab bar above.)
@@ -6920,10 +7648,35 @@ document.addEventListener('DOMContentLoaded', function() {
     return html
 
 
+def apply_gas_settings():
+    """Override the gas/power actual_end from WORKING/gas_settings.json if present.
+    File shape: {"gas": "2026-05", "power": "2026-05"} (YYYY-MM, the last ACTUAL month)."""
+    if not os.path.exists(GAS_SETTINGS_FILE):
+        return
+    try:
+        with open(GAS_SETTINGS_FILE, encoding="utf-8") as f:
+            settings = json.load(f)
+    except Exception as e:
+        print(f"WARNING: could not read {GAS_SETTINGS_FILE}: {e} - using defaults")
+        return
+    for config in DATASETS:
+        ym = settings.get(config["key"])
+        if not ym:
+            continue
+        try:
+            y, m = (int(x) for x in str(ym).split("-")[:2])
+            config["actual_end"] = (y, m)
+            print(f"[{config['key']}] last actual month from gas_settings.json: {y}-{m:02d}")
+        except ValueError:
+            print(f"WARNING: bad value for '{config['key']}' in gas_settings.json: {ym!r} - using default")
+
+
 def main():
     print("=" * 60)
     print("Palissy Multi-Dataset Dashboard Generator")
     print("=" * 60)
+
+    apply_gas_settings()
 
     datasets_by_key = {}
     ordered_keys = []
