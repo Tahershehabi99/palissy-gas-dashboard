@@ -184,6 +184,60 @@ def detect_forecast_start(src, dates):
     return None
 
 
+# Monthly Exports -> Assumptions name aliases. The Assumptions join is by EXACT
+# name (Monthly Exports row label -> Assumptions col A). Where the master spells a
+# project differently on the two tabs, map the Monthly-Exports spelling to the
+# Assumptions spelling so the metadata still joins. The Monthly-Exports name stays
+# the project's key/display name (manifest, coords CSV). Fixing the master makes
+# an entry redundant, not wrong. Also used by preflight_lng.py.
+ASSUMPTIONS_ALIAS = {
+    # 2026-09-23 master: "Costal Blend" was corrected on Monthly Exports to "Coastal Blend",
+    # but the Assumptions row (226) reads "Coastal Bend LNG" (the real project name).
+    # Remove this line once the Monthly Exports row is spelled "Coastal Bend LNG".
+    "Coastal Blend LNG": "Coastal Bend LNG",
+}
+
+# Assumptions tab columns are located by HEADER TEXT on row 2 (never by fixed
+# column number): the 2026-09-23 master inserted a "FID date" column, which
+# silently shifted every fixed-index read by one. Required headers raise a clear
+# error (preflight reports it as a layout error and stops). Stake columns carry
+# no header, so they are anchored relative to "Other Partners".
+ASSUMPTIONS_HEADER_ROW = 2
+ASSUMPTIONS_REQUIRED = {
+    "name": "projects", "country": "country", "status": "status",
+    "unrisked_mmt": "unrisked capacity (mmt)", "unrisked_bcfd": "unrisked capacity (bcf/d)",
+    "start": "start date", "cos": "cos", "util_forecast": "utilisation forecast",
+    "util_decline": "utilisation decline (annual)", "decline_start": "decline start date",
+    "operator": "primary owner/operator", "partners": "other partners",
+}
+ASSUMPTIONS_OPTIONAL = {"fid": "fid date"}
+
+
+def assumptions_columns(asm):
+    """Map field -> 1-based column on the Assumptions sheet, from the row-2 headers.
+    Adds 'primary_stake' (= partners + 1) and 'stakes' (= the 7 columns after it)."""
+    hdr = {}
+    for c in range(1, (asm.max_column or 60) + 1):
+        v = asm.cell(ASSUMPTIONS_HEADER_ROW, c).value
+        if isinstance(v, str) and v.strip():
+            hdr.setdefault(v.strip().lower(), c)
+    cols = {}
+    missing = []
+    for key, text in ASSUMPTIONS_REQUIRED.items():
+        c = hdr.get(text)
+        if c is None:
+            missing.append(text)
+        cols[key] = c
+    if missing:
+        raise RuntimeError(f"Assumptions tab: header(s) not found on row {ASSUMPTIONS_HEADER_ROW}: {missing} "
+                           f"(found: {sorted(hdr)})")
+    for key, text in ASSUMPTIONS_OPTIONAL.items():
+        cols[key] = hdr.get(text)
+    cols["primary_stake"] = cols["partners"] + 1
+    cols["stakes"] = list(range(cols["partners"] + 2, cols["partners"] + 9))   # S1..S7
+    return cols
+
+
 def build_projects(src, srcf, out):
     me = src["Monthly Exports"]
     mef = srcf["Monthly Exports"]        # same layout, formulas preserved
@@ -193,29 +247,31 @@ def build_projects(src, srcf, out):
     print(f"  anchors: Reported {loc['rep']}  Unrisked {loc['unr']}  Risked {loc['rsk']}  "
           f"Util {loc['utl']}  cols {c0}-{c1}")
 
-    # --- Assumptions metadata, keyed by project name ---
-    # cols: A name, B country, C status, D unrisked mmt, E unrisked bcf/d, F start,
-    #       G CoS, H util forecast, I util decline, J decline start,
-    #       W(23) operator, X(24) partners, Y(25) primary stake, Z-AF(26-32) S1-S7
+    # --- Assumptions metadata, keyed by project name (see ASSUMPTIONS_ALIAS) ---
+    # Columns come from the row-2 headers (assumptions_columns), not fixed indices.
+    AC = assumptions_columns(asm)
+    print(f"  Assumptions columns: " + ", ".join(f"{k}={v}" for k, v in AC.items() if k != "stakes")
+          + f", stakes={AC['stakes'][0]}-{AC['stakes'][-1]}")
+    _d = lambda d: d.strftime("%Y-%m-%d") if isinstance(d, datetime) else ""
     meta = {}
-    for r in range(3, asm.max_row + 1):
-        name = _clean(asm.cell(r, 1).value)
+    for r in range(ASSUMPTIONS_HEADER_ROW + 1, asm.max_row + 1):
+        name = _clean(asm.cell(r, AC["name"]).value)
         if not name or name == "Total":
             continue
-        start = asm.cell(r, 6).value
         meta[name] = {
-            "status": _clean(asm.cell(r, 3).value) or "",
-            "unrisked_mmt": asm.cell(r, 4).value,
-            "unrisked_bcfd": asm.cell(r, 5).value,
-            "start": start.strftime("%Y-%m-%d") if isinstance(start, datetime) else "",
-            "cos": asm.cell(r, 7).value,
-            "util_forecast": asm.cell(r, 8).value,
-            "util_decline": asm.cell(r, 9).value,
-            "decline_start": (lambda d: d.strftime("%Y-%m-%d") if isinstance(d, datetime) else "")(asm.cell(r, 10).value),
-            "operator": _clean(asm.cell(r, 23).value) or "",
-            "partners": _clean(asm.cell(r, 24).value) or "",
-            "primary_stake": asm.cell(r, 25).value,
-            "stakes": [asm.cell(r, c).value for c in range(26, 33)],  # S1..S7
+            "status": _clean(asm.cell(r, AC["status"]).value) or "",
+            "unrisked_mmt": asm.cell(r, AC["unrisked_mmt"]).value,
+            "unrisked_bcfd": asm.cell(r, AC["unrisked_bcfd"]).value,
+            "start": _d(asm.cell(r, AC["start"]).value),
+            "fid": _d(asm.cell(r, AC["fid"]).value) if AC.get("fid") else "",
+            "cos": asm.cell(r, AC["cos"]).value,
+            "util_forecast": asm.cell(r, AC["util_forecast"]).value,
+            "util_decline": asm.cell(r, AC["util_decline"]).value,
+            "decline_start": _d(asm.cell(r, AC["decline_start"]).value),
+            "operator": _clean(asm.cell(r, AC["operator"]).value) or "",
+            "partners": _clean(asm.cell(r, AC["partners"]).value) or "",
+            "primary_stake": asm.cell(r, AC["primary_stake"]).value,
+            "stakes": [asm.cell(r, c).value for c in AC["stakes"]],  # S1..S7
         }
 
     # --- Utilisation series, keyed by name ---
@@ -257,7 +313,7 @@ def build_projects(src, srcf, out):
             for pname, pmark, series in pending:
                 if pmark != "M":
                     continue                      # drop trains
-                m = meta.get(pname, {})
+                m = meta.get(pname) or meta.get(ASSUMPTIONS_ALIAS.get(pname, pname), {})
                 cos = m.get("cos")
                 unr = m.get("unrisked_mmt")
                 risked = (unr * cos) if (isinstance(unr, (int, float)) and isinstance(cos, (int, float))) \
@@ -275,9 +331,14 @@ def build_projects(src, srcf, out):
 
     print(f"LNG Projects: {len(projects)} mains across "
           f"{len(set(p['country'] for p in projects))} countries")
-    missing = [p['name'] for p in projects if p['name'] not in meta]
+    aliased = [p['name'] for p in projects if p['name'] not in meta and ASSUMPTIONS_ALIAS.get(p['name']) in meta]
+    if aliased:
+        print(f"  (Assumptions joined via name alias for {len(aliased)}: "
+              f"{[(n, ASSUMPTIONS_ALIAS[n]) for n in aliased]} - consider aligning the names in the master)")
+    missing = [p['name'] for p in projects if p['name'] not in meta and ASSUMPTIONS_ALIAS.get(p['name']) not in meta]
     if missing:
-        print(f"  (no Assumptions match for {len(missing)}: {missing})")
+        print(f"  (no Assumptions match for {len(missing)}: {missing} -> status/CoS/start/operator blank; "
+              f"add them to the Assumptions tab or fix the name on Monthly Exports)")
 
     # --- Hardcoded-utilisation month mask per MAIN ---------------------------------
     # A forecast utilisation cell is "hardcoded" (fixed by Palissy, not engine-
@@ -350,7 +411,7 @@ def build_projects(src, srcf, out):
     headers = ["Project", "Country", "Region", "Status", "Unrisked (mmt)", "Unrisked (bcf/d)",
                "CoS", "Risked (mmt)", "Start date", "Util forecast", "Util decline",
                "Operator", "Partners", "Primary stake", "S1", "S2", "S3", "S4", "S5", "S6", "S7",
-               "Decline start", "HC months"]
+               "Decline start", "HC months", "FID date"]
     for c, h in enumerate(headers, start=1):
         ws.cell(row=1, column=c, value=h)
     for i, p in enumerate(projects, start=2):
@@ -362,6 +423,7 @@ def build_projects(src, srcf, out):
         row.append(p.get("decline_start", ""))           # col 22
         hc = hc_by_name.get(p["name"])                   # col 23: hardcoded-util months
         row.append(",".join(str(x) for x in hc) if hc else "")
+        row.append(p.get("fid", ""))                     # col 24: FID date (new in the 2026-09-23 master)
         for c, v in enumerate(row, start=1):
             ws.cell(row=i, column=c, value=v)
 

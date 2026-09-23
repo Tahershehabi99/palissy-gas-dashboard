@@ -25,7 +25,8 @@ from pathlib import Path
 
 import openpyxl
 
-from extract_lng_input import SRC, REGION_OF, COUNTRIES, _clean, locate_exports
+from extract_lng_input import (SRC, REGION_OF, COUNTRIES, ASSUMPTIONS_ALIAS, ASSUMPTIONS_HEADER_ROW,
+                               assumptions_columns, _clean, locate_exports)
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "WORKING" / "lng_manifest.json"   # pipeline state (not in INPUT)
@@ -34,13 +35,16 @@ MANIFEST = ROOT / "WORKING" / "lng_manifest.json"   # pipeline state (not in INP
 # REPORTED on the next update (the values already flow through automatically; this
 # is the visible confirmation / "did I paste the right file?" check). Status is
 # tracked separately (it can be a structural-ish change). Keyed col -> label.
-ASSUMP_COLS = [
-    (7, "CoS"), (8, "util forecast"), (9, "util decline"),
-    (6, "start"), (10, "decline start"), (4, "unrisked (mmt)"),
+# Assumptions fields fingerprinted per project: (field key, label). Columns are
+# resolved from the row-2 HEADERS at snapshot time (assumptions_columns) — the
+# 2026-09-23 master inserted a "FID date" column, which shifted fixed indices.
+ASSUMP_FIELDS = [
+    ("cos", "CoS"), ("util_forecast", "util forecast"), ("util_decline", "util decline"),
+    ("start", "start"), ("fid", "FID date"), ("decline_start", "decline start"),
+    ("unrisked_mmt", "unrisked (mmt)"),
 ]
-# Ownership lives across several columns; compared as one group (operator col 23,
-# partners col 24, primary stake col 25, partner stakes S1..S7 cols 26-32).
-OWNERSHIP_COLS = [23, 24, 25] + list(range(26, 33))
+# Ownership (operator, partners, primary stake, S1..S7) is compared as one group.
+OWNERSHIP_FIELDS = ["operator", "partners", "primary_stake"]
 
 
 def _av(v):
@@ -68,14 +72,16 @@ def snapshot():
         loc = locate_exports(me)                       # raises if an anchor is missing
         # Read the Assumptions tab once: status + the fingerprinted assumption fields
         # + an ownership signature, keyed by project name.
+        AC = assumptions_columns(asm)                  # header-located columns (raises if a header is missing)
         status_of, assum_of = {}, {}
-        for r in range(3, asm.max_row + 1):
-            nm = _clean(asm.cell(r, 1).value)
+        for r in range(ASSUMPTIONS_HEADER_ROW + 1, asm.max_row + 1):
+            nm = _clean(asm.cell(r, AC["name"]).value)
             if not nm or nm == "Total":
                 continue
-            status_of[nm] = _clean(asm.cell(r, 3).value) or ""
-            a = {label: _av(asm.cell(r, c).value) for c, label in ASSUMP_COLS}
-            a["ownership"] = [_av(asm.cell(r, c).value) for c in OWNERSHIP_COLS]
+            status_of[nm] = _clean(asm.cell(r, AC["status"]).value) or ""
+            a = {label: (_av(asm.cell(r, AC[key]).value) if AC.get(key) else None) for key, label in ASSUMP_FIELDS}
+            a["ownership"] = [_av(asm.cell(r, AC[k]).value) for k in OWNERSHIP_FIELDS] \
+                           + [_av(asm.cell(r, c).value) for c in AC["stakes"]]
             assum_of[nm] = a
         # Walk the Reported section exactly as the extractor does: mains (M) only,
         # country assigned on the country aggregate row.
@@ -90,9 +96,10 @@ def snapshot():
             elif nm in COUNTRIES:
                 for pn, pm in pending:
                     if pm == "M":
+                        an = pn if pn in status_of else ASSUMPTIONS_ALIAS.get(pn, pn)   # same alias join as the extractor
                         projects[pn] = {"country": nm, "region": REGION_OF.get(nm, nm),
-                                        "status": status_of.get(pn, ""),
-                                        "assumptions": assum_of.get(pn, {})}
+                                        "status": status_of.get(an, ""),
+                                        "assumptions": assum_of.get(an, {})}
                 pending = []
             elif nm == "Grand total":
                 pending = []
@@ -171,7 +178,7 @@ def main():
         if not oa or not na:
             continue                       # manifest predates this check -> nothing to compare
         changes = []
-        for _c, label in ASSUMP_COLS:
+        for _k, label in ASSUMP_FIELDS:
             if oa.get(label) != na.get(label):
                 changes.append(f"{label} {_fmt(oa.get(label))}->{_fmt(na.get(label))}")
         if oa.get("ownership") != na.get("ownership"):

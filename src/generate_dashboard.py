@@ -416,13 +416,13 @@ MARKERCLUSTER_JS = "https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dis
 # (CARTO's free tiles started returning "API key required" - see ADR-021.)
 WORLD_FILE = os.path.join(SCRIPT_DIR, "world_countries.json")
 MAP_ATTRIB = 'Basemap: <a href="https://www.naturalearthdata.com/">Natural Earth</a>'
-# Dot colours by project status (user spec: pre-FID green, under construction
-# blue, producing yellow; shut-down / unclassified grey).
+# Dot colours by project status (user spec 2026-09-22: producing green, under
+# construction yellow, pre-FID blue, shut-down red; unclassified = grey).
 MAP_STATUS_COLORS = {
-    "Producing": "#E5B83A",
-    "Under construction": "#258EEB",
-    "Pre-FID": "#539648",
-    "Shut-down": "#9395A2",
+    "Producing": "#539648",
+    "Under construction": "#E5B83A",
+    "Pre-FID": "#258EEB",
+    "Shut-down": "#C00000",
 }
 
 
@@ -950,6 +950,7 @@ def build_projects_blob(config):
                 "cos": cell(7), "risked": cell(8), "start": cell(9) or "",
                 "util_forecast": uf, "util_decline": cell(11),
                 "decline_start": cell(22) or "", "hc": hc,
+                "fid": cell(24) or "",   # FID date (col 24, present since the 2026-09-23 master)
                 "operator": operator, "owners": owners, "companies": companies,
                 "co_stakes": co_stakes,
             }
@@ -2375,6 +2376,12 @@ body.map-eu #mapPaneEu { display: block; }
 }
 .map-legend .lg-title { font-weight: bold; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: """ + grey + """; margin-bottom: 4px; }
 .map-legend .lg-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+.map-legend .lg-hint { font-weight: normal; text-transform: none; letter-spacing: 0; margin-left: 6px; color: rgba(147,149,162,0.9); }
+.map-legend .lg-click { cursor: pointer; padding: 2px 6px; margin: 1px -6px; border-radius: 6px; user-select: none; transition: background 0.12s, opacity 0.12s; }
+.map-legend .lg-click:hover { background: rgba(39,41,98,0.07); }
+.map-legend .lg-off { opacity: 0.4; }
+.map-legend .lg-off .lg-lbl { text-decoration: line-through; }
+.map-legend .lg-off .lg-dot { background: #fff !important; }
 .map-legend .lg-dot { width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid rgba(39,41,98,0.45); flex: none; }
 .map-legend .lg-note { color: """ + grey + """; margin-top: 5px; font-size: 10.5px; line-height: 1.35; }
 
@@ -3215,10 +3222,11 @@ function mapRender(){
                 fillColor: col, fillOpacity: live ? 0.82 : 0.12, dashArray: live ? null : '2,2',
                 bubblingMouseEvents: false, mapStatus: mapStatusOf(p), mapName: p.name
             });
+            m._base = { fillOpacity: live ? 0.82 : 0.12, opacity: 0.75, weight: live ? 1 : 1.5 };   // restored after hover / legend highlight
             m.bindTooltip(mapTipHtml(p, cap, uCap), { direction: 'top', offset: [0, -r - 2], opacity: 1, className: 'map-tip' });
             m.on('click', function(){ mapShowDetail(p.name); });
             m.on('mouseover', function(){ this.setStyle({ weight: 2.5, opacity: 1 }); });
-            m.on('mouseout', function(){ this.setStyle({ weight: live ? 1 : 1.5, opacity: 0.75 }); });
+            m.on('mouseout', function(){ this.setStyle({ weight: this._base.weight, opacity: this._base.opacity }); });
             target.addLayer(m); mapMarkerByName[p.name] = m; shown++;
         });
     });
@@ -3238,14 +3246,41 @@ function mapTipHtml(p, cap, u){
     return '<b>' + prjEsc(p.name) + '</b><br><span class="t-sub">' + prjEsc(p.country) + ' · ' + prjEsc(mapStatusOf(p)) + '</span><br>' + capTxt
         + (p.operator ? '<br><span class="t-sub">' + prjEsc(p.operator) + '</span>' : '');
 }
+// Legend rows are interactive: hover = highlight only that status on the map,
+// click = hide/show that status (same effect as the Status dropdown; both stay in sync).
 function mapRenderLegend(u){
     var el = document.getElementById('mapLegend'); if (!el) return;
-    var h = '<div class="lg-title">Status</div>';
-    MAP_STATUS_LABELS.forEach(function(s){ h += '<div class="lg-row"><span class="lg-dot" style="background:' + MAP_STATUS_COLORS[s] + '"></span>' + s + '</div>'; });
-    if (mapPRJ().projects.some(function(p){ return !p.status; })) h += '<div class="lg-row"><span class="lg-dot" style="background:#9395A2"></span>' + MAP_UNCLASSIFIED + '</div>';
+    var all = mapAllValues('status'), sel = mapFilters.status;
+    var h = '<div class="lg-title">Status <span class="lg-hint">hover to highlight · click to hide/show</span></div>';
+    all.forEach(function(s){
+        var off = sel.length > 0 && sel.indexOf(s) < 0;
+        var col = MAP_STATUS_COLORS[s] || '#9395A2';
+        h += '<div class="lg-row lg-click' + (off ? ' lg-off' : '') + '" data-status="' + prjAttr(s) + '" title="' + (off ? 'Click to show' : 'Click to hide') + '"'
+           + ' onmouseenter="mapLegendHover(this.getAttribute(\'data-status\'))" onmouseleave="mapLegendHover(null)"'
+           + ' onclick="mapLegendClick(this.getAttribute(\'data-status\'))">'
+           + '<span class="lg-dot" style="background:' + col + '"></span><span class="lg-lbl">' + prjEsc(s) + '</span></div>';
+    });
     h += '<div class="lg-note">Dot size = ' + (mapTimelineOn ? (mapBasis + ' capacity, end-' + mapYear) : 'nameplate capacity') + ' (' + u + ').'
-       + (mapTimelineOn ? ' Hollow = not online that year.' : '') + ' Hover for a summary, click for details.</div>';
+       + (mapTimelineOn ? ' Hollow = not online that year.' : '') + ' Hover a dot for a summary, click it for details.</div>';
     el.innerHTML = h;
+}
+// Hover: fade every dot whose status differs; null restores each dot's own base style.
+function mapLegendHover(status){
+    for (var n in mapMarkerByName) {
+        var m = mapMarkerByName[n], b = m._base || {};
+        if (status && m.options.mapStatus !== status) m.setStyle({ fillOpacity: 0.06, opacity: 0.12 });
+        else m.setStyle({ fillOpacity: b.fillOpacity, opacity: b.opacity, weight: b.weight });
+    }
+}
+// Click: toggle that status in the Status filter. With nothing selected (= all
+// shown) the first click hides just that status; re-adding the last one clears
+// the filter back to "all". Dropdown, dots and legend all update together.
+function mapLegendClick(status){
+    var all = mapAllValues('status'), cur = mapFilters.status;
+    var eff = cur.length ? cur.slice() : all.slice();
+    var i = eff.indexOf(status); if (i >= 0) eff.splice(i, 1); else eff.push(status);
+    mapFilters.status = (eff.length >= all.length) ? [] : eff;
+    mapUpdateFilterUI(); mapRender(); mapFitToSelection(false);
 }
 // Zoom to the selected dots when the selection is narrower than "everything";
 // back to the world view when it widens again.
@@ -3283,6 +3318,7 @@ function mapShowDetail(name){
     h += mapMetric('Risked capacity', prjNum(mapConvCap(risked), 1), u);
     h += mapMetric('Chance of success', (p.status === 'Producing' && cos == null) ? '100%' : prjPct(cos), '');
     h += mapMetric('Start date', start, '');
+    if (p.fid) h += mapMetric('FID date', prjStart(p.fid), '');
     h += mapMetric('Utilisation forecast', (typeof p.util_forecast === 'number') ? prjPct(p.util_forecast) : (p.util_forecast ? prjEsc(p.util_forecast) : '—'), '');
     h += mapMetric('Utilisation decline', (typeof p.util_decline === 'number') ? prjPct(p.util_decline) + '/yr' : '—', '');
     h += '</div>';
