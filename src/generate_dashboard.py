@@ -4675,6 +4675,8 @@ function updateGasBuildupChart() {
     if (!view) return;
     var vis=getVisibleIndices();
     var labels=[]; for (var k=0;k<vis.length;k++) labels.push(view.short_columns[vis[k]]||view.columns[vis[k]]);
+    // Rows must come from the SAME period view as the visible indices (getRowByLabel is Monthly-only).
+    var rowByLabel={}; for (var r=0;r<view.rows.length;r++) rowByLabel[view.rows[r].label]=view.rows[r];
 
     var sr=gasStorageRow();
     var isStoragePct = (gasBuildupSel.length===1 && gasBuildupSel[0]===sr);
@@ -4682,13 +4684,13 @@ function updateGasBuildupChart() {
 
     var datasets=[];
     if (isStoragePct) {
-        var row=getRowByLabel(sr), data=[];
+        var row=rowByLabel[sr]||null, data=[];
         for (var k=0;k<vis.length;k++) data.push(row ? row.base[vis[k]]*100 : null);
         datasets.push({ label:'Storage %', data:data, borderColor:'#272962', backgroundColor:'rgba(0,0,0,0)', borderWidth:2, pointRadius:0, fill:false, tension:0.2 });
     } else {
         var leaves=gasBuildupLeaves().filter(function(l){ return gasBuildupSel.indexOf(l.row)>=0; });
         for (var s=0;s<leaves.length;s++) {
-            var lf=leaves[s], row=getRowByLabel(lf.row), data=[];
+            var lf=leaves[s], row=rowByLabel[lf.row]||null, data=[];
             for (var k=0;k<vis.length;k++) {
                 var ci=vis[k];
                 var raw = row ? (lf.abs ? Math.abs(row.base[ci]) : row.base[ci]) : 0;
@@ -5155,9 +5157,12 @@ function lngUpdateStack(subKey) {
     // Series descriptors: imports = selected countries; exports = region totals
     // for fully-selected regions, else the individually-selected member countries.
     var series = lngStackDescriptors(subKey);
+    // Rows must come from the SAME period view as the from/to indices (not Monthly).
+    var rowByLabel = {};
+    for (var r=0;r<view.rows.length;r++) rowByLabel[view.rows[r].label] = view.rows[r];
     var datasets = [];
     for (var s=0;s<series.length;s++) {
-        var d = series[s], row = lngGetRow(sub, d.row), data = [];
+        var d = series[s], row = rowByLabel[d.row] || null, data = [];
         for (var i=fromIdx;i<=toIdx;i++) {
             var v = row ? applyUnitConversion(row.base[i], unitKey, view.days[i]) : 0;
             if (stacked && v<0) v = 0;
