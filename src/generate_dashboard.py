@@ -219,8 +219,8 @@ LNG_IMPORTS_CFG = {
     "unaccounted_row": "Unaccounted demand",
     # Single-cell fixes (row label, year, month): shown as 0 while the master's value is
     # negative; once the master holds a non-negative value there, that value is used.
-    # User request 2026-09-30: Egypt Nov 2023 is -0.07 mmt in the master. Only this cell -
-    # the Total row is NOT adjusted.
+    # User request 2026-09-30: Egypt Nov 2023 is -0.07 mmt in the master. Only this cell;
+    # the Total row is raised by the same amount for that month so the table ties out.
     "zero_if_negative": [("Egypt", 2023, 11)],
 }
 LNG_EXPORTS_CFG = {
@@ -515,8 +515,14 @@ def read_dataset(wb, config):
         if row is None or ci is None:
             print(f"  NOTE: zero_if_negative cell {lab} {yr}-{mo:02d} not found - nothing overridden")
         elif row["values"][ci] < 0:
-            print(f"  Override: {lab} {yr}-{mo:02d} shown as 0 (master has {row['values'][ci]:.4f})")
+            old = row["values"][ci]
             row["values"][ci] = 0.0
+            # Keep the table tying out: lift the Total row by the amount removed.
+            total = next((x for x in rows if x["label"] == config.get("total_row")), None)
+            if total is not None and total is not row:
+                total["values"][ci] -= old
+            print(f"  Override: {lab} {yr}-{mo:02d} shown as 0 (master has {old:.4f})"
+                  + (f"; {total['label']} raised by {-old:.4f} to tie out" if total is not None and total is not row else ""))
         else:
             print(f"  Override not needed: {lab} {yr}-{mo:02d} is {row['values'][ci]:.4f} in the master (using it)")
 
