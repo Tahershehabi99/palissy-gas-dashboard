@@ -208,13 +208,20 @@ LNG_IMPORTS_CFG = {
     "total_row": "Total",
     "source_colors": LNG_IMPORT_COLORS,
     # Charts: flat country list. Range = multiselect (countries + Total, mutex).
-    # Stacked series = the 12 countries (Unaccounted/Total excluded).
+    # Build-up = the 12 countries + 'Unaccounted demand' as the top band, so the stack
+    # reaches the table Total (user request 2026-09-30; it was excluded before).
     "range_kind": "flat",
     "chart_series": ["EU+UK", "China", "Japan", "South Korea", "Taiwan", "India",
                      "Other Asia", "LatAm", "Middle East", "Egypt", "Turkey", "RoW"],
+    "stack_extra_series": ["Unaccounted demand"],
     # 'unaccounted_row' marks the actual-vs-forecast boundary: the last month
     # where this row is EMPTY is the latest month with real data.
     "unaccounted_row": "Unaccounted demand",
+    # Single-cell fixes (row label, year, month): shown as 0 while the master's value is
+    # negative; once the master holds a non-negative value there, that value is used.
+    # User request 2026-09-30: Egypt Nov 2023 is -0.07 mmt in the master. Only this cell -
+    # the Total row is NOT adjusted.
+    "zero_if_negative": [("Egypt", 2023, 11)],
 }
 LNG_EXPORTS_CFG = {
     "key": "lng_exports",
@@ -499,6 +506,19 @@ def read_dataset(wb, config):
             pass
         rows.append({"label": label_str, "values": values})
         r += 1
+
+    # Single-cell fixes from config (see 'zero_if_negative'): keyed by row label + month,
+    # so they survive re-extraction and switch themselves off when the master is corrected.
+    for lab, yr, mo in config.get("zero_if_negative", []):
+        row = next((x for x in rows if x["label"] == lab), None)
+        ci = next((i for i, d in enumerate(dates) if d is not None and d.year == yr and d.month == mo), None)
+        if row is None or ci is None:
+            print(f"  NOTE: zero_if_negative cell {lab} {yr}-{mo:02d} not found - nothing overridden")
+        elif row["values"][ci] < 0:
+            print(f"  Override: {lab} {yr}-{mo:02d} shown as 0 (master has {row['values'][ci]:.4f})")
+            row["values"][ci] = 0.0
+        else:
+            print(f"  Override not needed: {lab} {yr}-{mo:02d} is {row['values'][ci]:.4f} in the master (using it)")
 
     # Per-row actual/forecast boundary (from the master's cell colours), written by
     # extract_gas_input.py to a 'Boundaries' sheet: Sheet | Row | 'YYYY-MM'. Rows
@@ -850,6 +870,8 @@ def build_dataset_blob(config):
         # LNG composite metadata (ignored by gas/power).
         "range_kind": config.get("range_kind"),
         "chart_series": config.get("chart_series"),
+        # Build-up (stacked) series = chart_series + any extras, in stack order.
+        "stack_series": (config.get("chart_series") or []) + config.get("stack_extra_series", []),
     }
 
 
@@ -3581,6 +3603,36 @@ function cycleSeriesLabel(cal, base, suffix) {
                : ('GY ' + String(base).slice(-2) + '/' + String(base + 1).slice(-2) + (suffix || ''));
 }
 
+/* Actual/forecast split on the year lines of a range/seasonality chart: cycle
+   positions after the latest actual month (la = {year, month}) are forecast and
+   are drawn dashed in the line's own colour (solid up to the last actual).
+   cycleForecastFrom -> first forecast position in the cycle (12 = none). */
+function cycleForecastFrom(cal, base, la) {
+    if (!la) return 12;
+    for (var i = 0; i < 12; i++) {
+        var a = cycleToActual(cal, base, i);
+        if (a.year > la.year || (a.year === la.year && a.month > la.month)) return i;
+    }
+    return 12;
+}
+function dashForecastTail(ds, fcFrom) {
+    ds.fcFrom = fcFrom;   // read by the tooltip (chartOptionsLine) to tag forecast points
+    if (fcFrom <= 0) ds.borderDash = [6,4];   // the whole cycle is forecast
+    else if (fcFrom < 12) ds.segment = { borderDash: function(c) { return c.p1DataIndex >= fcFrom ? [6,4] : undefined; } };
+    return ds;
+}
+// Latest actual month for a set of rows of the current dataset: the EARLIEST of the
+// rows' own boundaries (a sum is only actual where every component is); rows without
+// their own boundary use the tab-level one.
+function rowsLatestActual(labels) {
+    var la = null, tab = DATA.latest_actual || null;
+    for (var i = 0; i < labels.length; i++) {
+        var r = getRowByLabel(labels[i]), x = (r && r.la) ? r.la : tab;
+        if (x && (!la || x.year < la.year || (x.year === la.year && x.month < la.month))) la = x;
+    }
+    return la || tab;
+}
+
 function findMonthlyIdx(year, month) {
     var meta = DATA.views.Monthly.col_meta;
     for (var i = 0; i < meta.length; i++) {
@@ -3834,6 +3886,7 @@ function updateSeasonalityChart() {
     var prevLabel = cycleSeriesLabel(cal, prevGY);
     var curLabel  = cycleSeriesLabel(cal, cgy, ' (current)');
     var nextLabel = cycleSeriesLabel(cal, nextGY, ' (forecast)');
+    var la = rowsLatestActual(selected);
     var datasets = [
         // Invisible max line - exists only to anchor the range fill.
         { label: lookback + 'y max',     data: mx,        borderColor: 'rgba(0,0,0,0)', backgroundColor: 'rgba(0,0,0,0)', pointRadius: 0, fill: false, order: 20 },
@@ -3842,9 +3895,9 @@ function updateSeasonalityChart() {
         // Average = solid dark blue.
         { label: lookback + 'y average', data: avg,       borderColor: '#272962',       backgroundColor: 'rgba(0,0,0,0)', borderWidth: 1.8, pointRadius: 0, fill: false, tension: 0.25, order: 4 },
         // Previous GY = solid dark green.
-        { label: prevLabel,              data: prevVals,  borderColor: '#0C5B19',       backgroundColor: 'rgba(0,0,0,0)', borderWidth: 1.8, pointRadius: 2, fill: false, tension: 0.25, order: 3 },
-        // Current GY = solid red (most prominent).
-        { label: curLabel,               data: currVals,  borderColor: '#C00000',       backgroundColor: 'rgba(0,0,0,0)', borderWidth: 2.6, pointRadius: 3, fill: false, tension: 0.25, order: 1 },
+        dashForecastTail({ label: prevLabel, data: prevVals,  borderColor: '#0C5B19',   backgroundColor: 'rgba(0,0,0,0)', borderWidth: 1.8, pointRadius: 2, fill: false, tension: 0.25, order: 3 }, cycleForecastFrom(cal, prevGY, la)),
+        // Current GY = red (most prominent): solid through the latest actual, dashed after.
+        dashForecastTail({ label: curLabel,  data: currVals,  borderColor: '#C00000',   backgroundColor: 'rgba(0,0,0,0)', borderWidth: 2.6, pointRadius: 3, fill: false, tension: 0.25, order: 1 }, cycleForecastFrom(cal, cgy, la)),
         // Next GY = dashed light green (forecast).
         { label: nextLabel,              data: nextVals,  borderColor: '#539648',       backgroundColor: 'rgba(0,0,0,0)', borderWidth: 1.8, borderDash: [6,4], pointRadius: 2, fill: false, tension: 0.25, order: 2 },
     ];
@@ -3886,7 +3939,12 @@ function chartOptionsLine(unitKey) {
                 titleFont: scaledFont(11, fam),
                 bodyFont: scaledFont(10.5, fam),
                 callbacks: {
-                    label: function(ctx) { return ctx.dataset.label + ': ' + (ctx.parsed.y === null || ctx.parsed.y === undefined ? '-' : ctx.parsed.y.toFixed(1)); }
+                    label: function(ctx) {
+                        var lbl = ctx.dataset.label || '';
+                        // Year lines with a forecast tail (dashForecastTail): tag the forecast months.
+                        if (ctx.dataset.fcFrom != null && ctx.dataIndex >= ctx.dataset.fcFrom) lbl = lbl.replace(' (current)', '') + ' (forecast)';
+                        return lbl + ': ' + (ctx.parsed.y === null || ctx.parsed.y === undefined ? '-' : ctx.parsed.y.toFixed(1));
+                    }
                 }
             }
         },
@@ -4484,12 +4542,13 @@ function updateGasRangeChart() {
     var prevLabel=cycleSeriesLabel(cal, prevGY);
     var curLabel =cycleSeriesLabel(cal, cgy, ' (current)');
     var nextLabel=cycleSeriesLabel(cal, nextGY, ' (forecast)');
+    var la=rowsLatestActual(res.rows.map(function(r){ return r.label; }));
     var datasets=[
         { label: lookback+'y max',     data: mx,       borderColor:'rgba(0,0,0,0)', backgroundColor:'rgba(0,0,0,0)', pointRadius:0, fill:false, order:20 },
         { label: lookback+'y range',   data: mn,       borderColor:'rgba(0,0,0,0)', backgroundColor:'rgba(147,149,162,0.28)', pointRadius:0, fill:'-1', order:19 },
         { label: lookback+'y average', data: avg,      borderColor:'#272962', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, pointRadius:0, fill:false, tension:0.25, order:4 },
-        { label: prevLabel,            data: prevVals, borderColor:'#0C5B19', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, pointRadius:2, fill:false, tension:0.25, order:3 },
-        { label: curLabel,             data: currVals, borderColor:'#C00000', backgroundColor:'rgba(0,0,0,0)', borderWidth:2.6, pointRadius:3, fill:false, tension:0.25, order:1 },
+        dashForecastTail({ label: prevLabel, data: prevVals, borderColor:'#0C5B19', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, pointRadius:2, fill:false, tension:0.25, order:3 }, cycleForecastFrom(cal, prevGY, la)),
+        dashForecastTail({ label: curLabel,  data: currVals, borderColor:'#C00000', backgroundColor:'rgba(0,0,0,0)', borderWidth:2.6, pointRadius:3, fill:false, tension:0.25, order:1 }, cycleForecastFrom(cal, cgy, la)),
         { label: nextLabel,            data: nextVals, borderColor:'#539648', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, borderDash:[6,4], pointRadius:2, fill:false, tension:0.25, order:2 },
     ];
 
@@ -4832,7 +4891,7 @@ function lngInit() {
     // Imports: flat selectors. Range = countries + a mutex Total (default Total);
     // build-up = All-checklist of the 12 countries.
     buildMultiSelect('msLngImpRange', imp.chart_series, imp.total_row, [imp.total_row], function(){ lngUpdateRange('imports'); });
-    lngStackSel.imports = imp.chart_series.slice();
+    lngStackSel.imports = lngStackList(imp).slice();
     lngBuildStackSelector('imports');
 
     // Exports: hierarchical selectors for BOTH charts. Default = every leaf
@@ -5053,8 +5112,8 @@ function lngUpdateRange(subKey) {
         { label: lookback+'y max',     data: mx,       borderColor:'rgba(0,0,0,0)', backgroundColor:'rgba(0,0,0,0)', pointRadius:0, fill:false, order:20 },
         { label: lookback+'y range',   data: mn,       borderColor:'rgba(0,0,0,0)', backgroundColor:'rgba(147,149,162,0.28)', pointRadius:0, fill:'-1', order:19 },
         { label: lookback+'y average', data: avg,      borderColor:'#272962', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, pointRadius:0, fill:false, tension:0.25, order:4 },
-        { label: prevLabel,            data: prevVals, borderColor:'#0C5B19', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, pointRadius:2, fill:false, tension:0.25, order:3 },
-        { label: curLabel,             data: currVals, borderColor:'#C00000', backgroundColor:'rgba(0,0,0,0)', borderWidth:2.6, pointRadius:3, fill:false, tension:0.25, order:1 },
+        dashForecastTail({ label: prevLabel, data: prevVals, borderColor:'#0C5B19', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, pointRadius:2, fill:false, tension:0.25, order:3 }, cycleForecastFrom(cal, prevGY, LNG.latest_actual)),
+        dashForecastTail({ label: curLabel,  data: currVals, borderColor:'#C00000', backgroundColor:'rgba(0,0,0,0)', borderWidth:2.6, pointRadius:3, fill:false, tension:0.25, order:1 }, cycleForecastFrom(cal, cgy, LNG.latest_actual)),
         { label: nextLabel,            data: nextVals, borderColor:'#539648', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, borderDash:[6,4], pointRadius:2, fill:false, tension:0.25, order:2 },
     ];
     var opts = chartOptionsLine(unitKey);
@@ -5067,6 +5126,9 @@ function lngUpdateRange(subKey) {
 }
 
 /* ---- Stacked build-up charts (own from/to + chart-type toggle) ---- */
+// Series offered on the flat (imports) build-up: chart_series + extras such as
+// 'Unaccounted demand' (top band), so the full stack equals the table Total.
+function lngStackList(sub) { return sub.stack_series || sub.chart_series; }
 function lngBuildStackSelector(subKey) {
     var sub = lngSubBlob(subKey), ids = lngIds(subKey);
     var container = document.getElementById(ids.stackSel); if (!container) return;
@@ -5075,7 +5137,8 @@ function lngBuildStackSelector(subKey) {
     var panel = document.createElement('div'); panel.className='ms-panel'; container.appendChild(panel);
     panel.appendChild(lngStackItem(subKey, 'All', 'ms-group-header', '__ALL__'));
     var div = document.createElement('div'); div.className='ms-divider'; panel.appendChild(div);
-    for (var i=0;i<sub.chart_series.length;i++) panel.appendChild(lngStackItem(subKey, sub.chart_series[i], '', sub.chart_series[i]));
+    var list = lngStackList(sub);
+    for (var i=0;i<list.length;i++) panel.appendChild(lngStackItem(subKey, list[i], '', list[i]));
     button.addEventListener('click', function(ev){ ev.stopPropagation(); container.classList.toggle('open'); });
     lngStackRefresh(subKey);
 }
@@ -5088,7 +5151,7 @@ function lngStackItem(subKey, text, extraCls, key) {
     return lbl;
 }
 function lngStackClick(subKey, key) {
-    var sub = lngSubBlob(subKey), all = sub.chart_series.slice();
+    var sub = lngSubBlob(subKey), all = lngStackList(sub).slice();
     if (key==='__ALL__') {
         var allIn = all.every(function(r){ return lngStackSel[subKey].indexOf(r)>=0; });
         lngStackSel[subKey] = allIn ? [] : all.slice();
@@ -5097,7 +5160,7 @@ function lngStackClick(subKey, key) {
     lngToggleArr(lngStackSel[subKey], key);
 }
 function lngStackRefresh(subKey) {
-    var sub = lngSubBlob(subKey), ids = lngIds(subKey), all = sub.chart_series.slice();
+    var sub = lngSubBlob(subKey), ids = lngIds(subKey), all = lngStackList(sub).slice();
     var nAll = all.filter(function(r){ return lngStackSel[subKey].indexOf(r)>=0; }).length;
     lngStackSetCb(ids.stackSel, '__ALL__', nAll===all.length, nAll>0 && nAll<all.length);
     for (var i=0;i<all.length;i++) lngStackSetCb(ids.stackSel, all[i], lngStackSel[subKey].indexOf(all[i])>=0, false);
@@ -5110,7 +5173,7 @@ function lngStackSetCb(containerId, key, checked, indet) {
 function lngStackBtnLabel(subKey) {
     var sub = lngSubBlob(subKey), ids = lngIds(subKey);
     var c = document.getElementById(ids.stackSel); if (!c) return;
-    var btn = c.querySelector('.ms-button'); var all = sub.chart_series.slice(), sel = lngStackSel[subKey];
+    var btn = c.querySelector('.ms-button'); var all = lngStackList(sub).slice(), sel = lngStackSel[subKey];
     if (all.every(function(r){ return sel.indexOf(r)>=0; })) { btn.textContent = 'All'; btn.title = all.join(', '); return; }
     if (sel.length===0) { btn.textContent = 'None'; btn.title = ''; return; }
     btn.textContent = (sel.length<=2) ? sel.join(' + ') : sel[0]+' + '+(sel.length-1)+' more';
@@ -5326,7 +5389,7 @@ function lngExpStackSeries() {
 function lngStackDescriptors(subKey) {
     if (subKey === 'exports') return lngExpStackSeries();
     var sub = lngSubBlob('imports'), sel = lngStackSel.imports;
-    return sub.chart_series.filter(function(s){ return sel.indexOf(s)>=0; })
+    return lngStackList(sub).filter(function(s){ return sel.indexOf(s)>=0; })
         .map(function(s){ return { label: s, row: s, color: lngColor(sub, s) }; });
 }
 function lngRangeSelected(subKey) {
@@ -6025,8 +6088,8 @@ function prjRangeChartRender(){
         { label: lookback+'y max',     data: mx,       borderColor:'rgba(0,0,0,0)', backgroundColor:'rgba(0,0,0,0)', pointRadius:0, fill:false, order:20 },
         { label: lookback+'y range',   data: mn,       borderColor:'rgba(0,0,0,0)', backgroundColor:'rgba(147,149,162,0.28)', pointRadius:0, fill:'-1', order:19 },
         { label: lookback+'y average', data: avg,      borderColor:'#272962', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, pointRadius:0, fill:false, tension:0.25, order:4 },
-        { label: prevLabel,            data: prevVals, borderColor:'#0C5B19', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, pointRadius:2, fill:false, tension:0.25, order:3 },
-        { label: curLabel,             data: curVals,  borderColor:'#C00000', backgroundColor:'rgba(0,0,0,0)', borderWidth:2.6, pointRadius:3, fill:false, tension:0.25, order:1 },
+        dashForecastTail({ label: prevLabel, data: prevVals, borderColor:'#0C5B19', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, pointRadius:2, fill:false, tension:0.25, order:3 }, cycleForecastFrom(cal, prevGY, PRJ.latest_actual)),
+        dashForecastTail({ label: curLabel,  data: curVals,  borderColor:'#C00000', backgroundColor:'rgba(0,0,0,0)', borderWidth:2.6, pointRadius:3, fill:false, tension:0.25, order:1 }, cycleForecastFrom(cal, cgy, PRJ.latest_actual)),
         { label: nextLabel,            data: nextVals, borderColor:'#539648', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, borderDash:[6,4], pointRadius:2, fill:false, tension:0.25, order:2 },
     ];
     var opts=chartOptionsLine(unit); opts.scales.y.title.text=ul;
@@ -6507,8 +6570,8 @@ function utilRangeRender(){
         { label: lookback+'y max',     data: mx,       borderColor:'rgba(0,0,0,0)', backgroundColor:'rgba(0,0,0,0)', pointRadius:0, fill:false, order:20 },
         { label: lookback+'y range',   data: mn,       borderColor:'rgba(0,0,0,0)', backgroundColor:'rgba(147,149,162,0.28)', pointRadius:0, fill:'-1', order:19 },
         { label: lookback+'y average', data: avg,      borderColor:'#272962', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, pointRadius:0, fill:false, tension:0.25, order:4 },
-        { label: cycleSeriesLabel(cal,prevGY),         data: prevVals, borderColor:'#0C5B19', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, pointRadius:2, fill:false, tension:0.25, order:3 },
-        { label: cycleSeriesLabel(cal,cgy,' (current)'),data: curVals, borderColor:'#C00000', backgroundColor:'rgba(0,0,0,0)', borderWidth:2.6, pointRadius:3, fill:false, tension:0.25, order:1 },
+        dashForecastTail({ label: cycleSeriesLabel(cal,prevGY),          data: prevVals, borderColor:'#0C5B19', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, pointRadius:2, fill:false, tension:0.25, order:3 }, cycleForecastFrom(cal, prevGY, PRJ.latest_actual)),
+        dashForecastTail({ label: cycleSeriesLabel(cal,cgy,' (current)'), data: curVals,  borderColor:'#C00000', backgroundColor:'rgba(0,0,0,0)', borderWidth:2.6, pointRadius:3, fill:false, tension:0.25, order:1 }, cycleForecastFrom(cal, cgy, PRJ.latest_actual)),
         { label: cycleSeriesLabel(cal,nextGY,' (forecast)'),data: nextVals, borderColor:'#539648', backgroundColor:'rgba(0,0,0,0)', borderWidth:1.8, borderDash:[6,4], pointRadius:2, fill:false, tension:0.25, order:2 },
     ];
     var opts=chartOptionsLine('mmt'); opts.scales.y.title.text='Utilisation (%)'; opts.scales.y.ticks=opts.scales.y.ticks||{}; opts.scales.y.ticks.callback=function(v){return v+'%';};
