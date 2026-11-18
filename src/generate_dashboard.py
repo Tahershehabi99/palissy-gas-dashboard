@@ -324,7 +324,7 @@ DATASETS = [
     },
     {
         "key": "power",
-        "tab_label": "Power",
+        "tab_label": "Global Power",
         "title": "European Power Generation",
         "sheet": "Power Data",
         "date_row": 6,
@@ -395,12 +395,35 @@ DATASETS = [
 # so their independent daily pipeline keeps updating them — this dashboard
 # just surfaces them as extra tabs. "?embedded=1" hides their own logo.
 # ============================================================
+# Since 18-Nov-2026 every Palissy page lives in ONE GitHub repository (palissy-gas-dashboard), each in
+# its own folder: /pricing/, /imports/, /demand/, /power/. All publishing goes through
+# src\\site_publish.py - add a new page there (PAGES) and here. Storage and LNG Sendout still come
+# from the older eu-gas-dashboard site.
 EMBED_TABS = [
     {"key": "storage", "label": "Storage",
      "url": "https://tahershehabi99.github.io/eu-gas-dashboard/storage.html?embedded=1"},
     {"key": "lng", "label": "LNG Sendout",
      "url": "https://tahershehabi99.github.io/eu-gas-dashboard/lng.html?embedded=1"},
+    # Pricing (TTF / NBP / Henry Hub / JKM): its own page, built and published daily by the
+    # sibling "Gas Model Projects\\Pricing" project (update_pricing.bat). See ADR-023.
+    {"key": "pricing", "label": "Pricing",
+     "url": "https://tahershehabi99.github.io/palissy-gas-dashboard/pricing/?embedded=1"},
+    # Pipeline Imports: its own page, LIVE since 18-Nov-2026 - built and published daily by the sibling
+    # project "Gas Model Projects\\Imports" (update_imports_page.bat at the end of its RUN_DAILY_UPDATE.bat).
+    # Keep "enabled": True. (Managed by the imports chat; the Demand entry below belongs to the demand chat.)
+    {"key": "imports", "label": "Pipeline Imports", "enabled": True,
+     "url": "https://tahershehabi99.github.io/palissy-gas-dashboard/imports/?embedded=1"},
+    # Demand (European gas demand: Overview + Gas for Power): its own page, built and published
+    # daily by the sibling project "Gas Model Projects\\ENTSOG" (update_demand_page.bat, run at
+    # the end of RUN_DAILY_UPDATE.bat). Reads this dashboard's published docs/index.html.
+    {"key": "demand", "label": "Demand",
+     "url": "https://tahershehabi99.github.io/palissy-gas-dashboard/demand/?embedded=1"},
 ]
+EMBED_TABS = [t for t in EMBED_TABS if t.get("enabled", True)]
+
+# Order of the top tab bar (dataset keys, embed keys and "map"). A key with no tab
+# (e.g. a disabled embed) is skipped; any tab not listed here is added at the end.
+TAB_ORDER = ["gas", "storage", "imports", "lng", "demand", "power", "global_lng", "pricing", "map"]
 
 # ============================================================
 # MAP TAB
@@ -410,6 +433,15 @@ EMBED_TABS = [
 # ALL_DATASETS.lng_projects directly (so it is scenario-aware) and is shown via
 # body.map-active, the same way the embed tabs are. See ADR-021.
 # ============================================================
+# Global Power sub-tabs (ADR-024). "Europe" is the native power dataset above (gas model,
+# with forecasts). The Asian countries + Combined are their own page, built and published
+# by the sibling project "Gas Model Projects\\Ember Electricity" (update_ember.bat), and
+# shown here in the embed iframe - so Ember updates never need this dashboard rebuilt.
+POWER_ASIA = {
+    "url": "https://tahershehabi99.github.io/palissy-gas-dashboard/power/",
+    "tabs": ["China", "India", "Japan", "South Korea", "Taiwan", "Combined"],
+}
+
 MAP_TAB = {"key": "map", "label": "Map"}
 # Leaflet + marker clustering (CDN, like Chart.js) and the free CARTO light basemap.
 LEAFLET_CSS = "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
@@ -1642,6 +1674,7 @@ td.g-neg { color: #C00000; }
     .header h1 { font-size: 14px; letter-spacing: 0.5px; }
     .dataset-toggle-bar { padding: 6px 12px 10px; }
     .dataset-toggle-btn { font-size: 12px; padding: 7px 18px; }
+    .dataset-toggle-bar { flex-wrap: wrap; row-gap: 6px; }  /* 7 tabs no longer fit a phone */
     .controls {
         flex-direction: column; gap: 10px; padding: 10px 14px;
         margin: 0 8px 8px; border-radius: 10px;
@@ -1989,6 +2022,9 @@ body.projects-tab .embed-container { display: none; }
 .lng-subtab-bar { display: none; justify-content: center; gap: 0; margin: 4px 20px 14px; }
 body.lng-composite .lng-subtab-bar,
 body.projects-tab .lng-subtab-bar { display: flex; }
+/* Global Power sub-tabs (ADR-024): never on the LNG group, only Europe power + embedded Asia pages */
+body.lng-composite .power-subtab-bar, body.projects-tab .power-subtab-bar { display: none; }
+body.dataset-power .power-subtab-bar, body.embed-power_asia .power-subtab-bar { display: flex; flex-wrap: wrap; }
 .lng-subtab-btn {
     font-family: 'Gotham Book','Segoe UI',Calibri,sans-serif;
     font-size: 12.5px; font-weight: bold; padding: 7px 26px;
@@ -2490,6 +2526,28 @@ var DATA = ALL_DATASETS[currentKey];
 
 // Embed tabs (Storage / LNG Sendout) — external live pages shown via iframe.
 var EMBED_TABS = __EMBED_TABS__;
+// Global Power sub-tabs: Europe = native 'power' dataset; the rest = embedded Ember page.
+var POWER_ASIA = __POWER_ASIA__;
+function powerSubActive(name) {
+    var bs = document.querySelectorAll('.power-subtab-btn');
+    for (var i = 0; i < bs.length; i++) bs[i].classList.toggle('active', bs[i].getAttribute('data-key') === name);
+}
+function showPowerSub(name) {
+    if (name === 'Europe') { powerSubActive('Europe'); switchDataset('power'); return; }
+    if (typeof captureSharedUIState === 'function' && !embedActive) captureSharedUIState();
+    embedActive = true;
+    setActiveTabButton('power');
+    document.body.className = 'embed-active embed-power_asia';
+    var title = name === 'Combined' ? 'Global Power - Combined' : name + ' Power Generation';
+    document.getElementById('pageTitle').textContent = title;
+    document.title = 'Palissy Advisors - ' + title;
+    powerSubActive(name);
+    var frame = document.getElementById('embedFrame'), key = 'power_asia:' + name;
+    if (frame && frame.getAttribute('data-key') !== key) {
+        frame.src = POWER_ASIA.url + '?embedded=1&nobar=1&country=' + encodeURIComponent(name);
+        frame.setAttribute('data-key', key);
+    }
+}
 var EMBED_MAP = {};
 for (var _e=0; _e<EMBED_TABS.length; _e++) EMBED_MAP[EMBED_TABS[_e].key] = EMBED_TABS[_e];
 // Every tab button, in bar order: data datasets first, then embed tabs.
@@ -2915,6 +2973,7 @@ function updateDatasetUI() {
     document.body.className = bodyCls;
     // A hidden sub-tab dataset (e.g. lng_projects) keeps its PARENT tab button lit.
     setActiveTabButton(DATA.parent_tab || currentKey);
+    if (currentKey === 'power') powerSubActive('Europe');
     if(typeof scenUpdateBars==='function') scenUpdateBars();   // show/hide the scenario bar
 }
 
@@ -7077,6 +7136,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     js = js.replace("__DATA_PLACEHOLDER__", data_json)
     js = js.replace("__EMBED_TABS__", json.dumps(EMBED_TABS))
+    js = js.replace("__POWER_ASIA__", json.dumps(POWER_ASIA))
     js = js.replace("__MAP_STATUS_COLORS__", json.dumps(MAP_STATUS_COLORS))
     js = js.replace("__MAP_ATTRIB__", json.dumps(MAP_ATTRIB))
     # Embedded vector basemap (already compact JSON; no re-serialisation needed).
@@ -7089,31 +7149,33 @@ document.addEventListener('DOMContentLoaded', function() {
         print(f"  WARNING: {WORLD_FILE} not found - the map will have no country outlines")
     js = js.replace("__WORLD_GEOJSON__", world_json)
 
-    # Build tab toggle buttons: data datasets first, then embed tabs (Storage/LNG).
+    # Build tab toggle buttons, then put them in TAB_ORDER (datasets, embeds and Map mixed).
     # `hidden_tab` datasets (e.g. lng_projects) get no top-level button — they're
     # reached as sub-tabs under their parent (Global LNG) via the lng-subtab bar.
     cfg_by_key = {c["key"]: c for c in DATASETS}
-    toggle_buttons = []
+    tab_buttons = {}
     for k in ordered_keys:
         if cfg_by_key.get(k, {}).get("hidden_tab"):
             continue
         ds = datasets_by_key[k]
         # Global LNG enters through its sub-tab controller (defaults to Overview).
         onclick = "lngSetSubtab('overview')" if k == "global_lng" else f"switchDataset('{k}')"
-        toggle_buttons.append(
+        tab_buttons[k] = (
             f'<button class="dataset-toggle-btn{" active" if k == ordered_keys[0] else ""}" '
             f'id="btnDataset-{k}" onclick="{onclick}">{ds["tab_label"]}</button>'
         )
     for t in EMBED_TABS:
-        toggle_buttons.append(
+        tab_buttons[t["key"]] = (
             f'<button class="dataset-toggle-btn" '
             f'id="btnDataset-{t["key"]}" onclick="showEmbedTab(\'{t["key"]}\')">{t["label"]}</button>'
         )
-    # Map tab (Global LNG project map / European gas balance placeholder) — last.
-    toggle_buttons.append(
+    # Map tab (Global LNG project map / European gas balance placeholder).
+    tab_buttons[MAP_TAB["key"]] = (
         f'<button class="dataset-toggle-btn" id="btnDataset-{MAP_TAB["key"]}" '
         f'onclick="showMapTab()">{MAP_TAB["label"]}</button>'
     )
+    tab_sequence = [k for k in TAB_ORDER if k in tab_buttons] + [k for k in tab_buttons if k not in TAB_ORDER]
+    toggle_buttons = [tab_buttons[k] for k in tab_sequence]
 
     html = '<!DOCTYPE html>\n<html lang="en">\n<head>\n'
     html += '<meta charset="UTF-8">\n'
@@ -7145,6 +7207,14 @@ document.addEventListener('DOMContentLoaded', function() {
     html += '    <button class="lng-subtab-btn" id="lngSubCapacity" onclick="lngSetSubtab(\'capacity\')">Capacity</button>\n'
     html += '    <button class="lng-subtab-btn" id="lngSubUtilisation" onclick="lngSetSubtab(\'utilisation\')">Utilisation</button>\n'
     html += '    <button class="lng-subtab-btn" id="lngSubProjects" onclick="lngSetSubtab(\'projects\')">Projects</button>\n'
+    html += '</div>\n\n'
+
+    # Global Power sub-tab bar: Europe (native) | Asian countries + Combined (embedded page).
+    # Visible on the Europe power page (body.dataset-power) and the embedded country pages.
+    html += '<div class="lng-subtab-bar power-subtab-bar" id="powerSubtabBar">\n'
+    html += '    <button class="lng-subtab-btn power-subtab-btn active" data-key="Europe" onclick="showPowerSub(\'Europe\')">Europe</button>\n'
+    for _pn in POWER_ASIA["tabs"]:
+        html += f'    <button class="lng-subtab-btn power-subtab-btn" data-key="{_pn}" onclick="showPowerSub(\'{_pn}\')">{_pn}</button>\n'
     html += '</div>\n\n'
 
     # Scenario bar — always present across the Global LNG sub-tabs (incl. Overview).
